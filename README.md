@@ -1,6 +1,6 @@
 # Lodestone
 
-Lodeworks is an original logistics and industry mod for Kerbal Space Program 1. The repository contains the Phase 0 build scaffold and Phase 1 API feasibility probes. Phase 1 is blocked at the stock part-lock/launch gate; there are no playable colony systems yet.
+Lodeworks is an original logistics and industry mod for Kerbal Space Program 1. The repository contains the Phase 0 build scaffold and Phase 1 API feasibility probes. A stock part-lock route has been identified, but Phase 1 still awaits in-game checks; there are no playable colony systems yet.
 
 ## Local build
 
@@ -17,4 +17,3 @@ Change the path for another PC. [KSPBuildTools](https://kspbuildtools.readthedoc
 The staged mod files are in `artifacts\GameData\Lodeworks\Plugins`: `Lodeworks.dll` and `Lodeworks.Sim.dll`. `artifacts` is build output and is ignored by Git. No KSP or Unity DLL is distributed. The compiled Phase 1 API probes are not wired to player commands and do not yet add playable features.
 
 See `PHASE_STATUS.md` for the checks completed and the remaining in-game validation.
-
