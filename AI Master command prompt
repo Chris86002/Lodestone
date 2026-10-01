@@ -1,0 +1,923 @@
+# Lodeworks Master Coding Document
+
+**Design revision:** 5.0, 2026-10-01. **Target release:** 0.1.0.
+
+This is the complete replacement for the previous master document. Do not combine its rules or phase numbers with the old document. The numbers below are initial balance values and must be configurable. Changes require a reason in DECISIONS.md and corresponding test updates.
+
+## 0 Purpose and implementation contract
+
+Build an original logistics and industry mod for Kerbal Space Program 1, versions 1.12.3 through 1.12.5. The player establishes industrial colonies, extracts ore with remembered origin and grade, manufactures rocket fuel, builds orbital depots, automates shipments, and progresses through a campaign presented by stock contracts. Returning specified cargo to KSC awards permanent Lodeworks blueprints and capabilities.
+
+The player must not need to bring loose Metal, Machine Parts, Supplies, or construction kits from Kerbin just to establish a working colony. Each launched hab includes one finite set of essential prefabricated placeables. Launching the hab, crew, and ordinary stock spacecraft is still normal KSP gameplay. The starter chain mines and processes local resources; additional buildings, storage and upgrades then consume manufactured Metal and, for advanced tiers, Machine Parts. Imported materials are optional for surface expansion, while station expansion may use delivered material. Campaign blueprints gate availability but do not replace material costs after startup. This deliberately supersedes the previous funds-only expansion rule.
+
+Use this session prompt with the phase table in section 18:
+
+```text
+Implement Lodeworks using Lodeworks-Master-Coding-Document-v5.md as the sole design authority.
+Implement only the phase ID named in my next message. Follow the execution order and dependency rules in section 18, including lettered phases. Preserve already accepted behavior.
+Read the whole relevant system section before coding. Do not invent additional systems.
+Separate pure simulation from the KSP adapter. One authoritative simulation owns all colony inventory.
+Verify every KSP API you use against the local target installation or current primary documentation.
+Record verified signatures and runtime observations in DECISIONS.md.
+Do not use Harmony or require Module Manager. Do not copy other mods' source or Squad assets.
+Before edits, list the phase scope, normative sections, dependencies, interfaces and acceptance cases. Implement a complete vertical slice of that phase, not unrelated future features.
+Run the phase's automated tests. Perform its game checks only if KSP is actually available.
+Record accepted, implemented-awaiting-game-check, or blocked honestly in PHASE_STATUS.md.
+Do not mark human checks passed unless you actually ran them.
+Stop after this phase. If blocked, report the exact prerequisite; do not silently substitute a feature.
+```
+
+When this document and observed KSP behavior disagree, record the discrepancy. Adjust adapter implementation without changing player-facing behavior. A player-facing change requires an explicit amendment. Closed decisions do not require repeated questions; genuinely unresolved API feasibility must be reported.
+
+### 0.1 Revision 5 closed implementation decisions
+
+This revision integrates the logistics review into the normative system rules, not a separate optional wish list. Keep the stock-fuel/depot design and finite starter kit. Add a baseline Metal-only battery bank; retain the advanced battery reward. Use one reservation authority, persisted dispatch policies, separate handling berths and fleet parking, a bounded wait-graph diagnostic, network bottleneck feedback, and a complete gameplay scenario. The surface deck remains fixed: expansion means upgrades or separately anchored colonies connected by paid transport, not free extra decks. Reduce initial machine wear to the value in section 8; calibration must measure intervention frequency.
+
+Existing phase numbers 0-21 remain stable; lettered phases are required intervening sessions, not optional suffixes. Do not implement the whole release in one session. This document defines requested behavior; it does not claim KSP adapter feasibility or game calibration has already passed.
+
+## 1 Scope and closed decisions
+
+### 1.1 Player loop
+
+1. Accept a Lodeworks campaign contract at Mission Control.
+2. Launch a hab and deploy it on a suitable landed site.
+3. Place the hab's included starter buildings on its deck, with no loose construction cargo requirement.
+4. Use local production to pay material costs for extra storage, buildings and upgrades.
+5. Inspect the deposit; mine ore into graded batches and optionally process it.
+6. Establish manual shipments or automated routes to other colonies or KSC.
+7. Supply enough qualifying cargo to the contract's receiving endpoint.
+8. Complete the contract and receive funds, reputation, and permanent blueprints.
+9. Use larger storage, faster equipment, and more capable transports to expand the network.
+
+Interesting constraints are extraction rate, grade, deposit life, power, storage, fuel production, propellant mass, vehicle range, depot placement, transport capacity, journey time, maintenance, and campaign objectives. Avoid repetitive colony switching as a requirement to keep ordinary operations running.
+
+### 1.2 Mandatory decisions
+
+- One colony has one deployed hab part as its physical anchor. Additional buildings and shipment vehicles are cosmetic GameObjects, not vessels.
+- Colony and depot cargo and transport propellants live only in the scenario-owned ledger. Do not mirror them into stock resource tanks. Explicit manual stock-fuel bridge transfers are allowed under section 9.6, with exactly one inventory owner before and after each transfer.
+- Colonies use their own explicit power system, specified in section 7. Colony power is not stock ElectricCharge. This intentionally replaces the old unloaded-EC restriction and RequestResource factory implementation.
+- Stock solar panels, batteries, fuel cells, ISRU, and stock Ore remain unchanged. They operate normally on spacecraft and do not silently power colony machinery. Transport uses the original stock LiquidFuel/Oxidizer IDs and their stock metadata, never a custom finished propellant; fuel-feed is only a raw production ingredient.
+- Shipment cargo leaves source inventory only when a departure transaction succeeds. Animations never own cargo or change arrival time.
+- Automated routes are authoritative gameplay. Cosmetic trucks remain pictures of local activity; local transfers are instantaneous.
+- First deployment has one finite prefabricated starter set included with each hab. Extra buildings and upgrades consume the endpoint's Metal and, where specified, Machine Parts. No ongoing building placement funds fee substitutes for these materials. All advanced construction needs its blueprint; supplied starter pieces are baseline exceptions defined explicitly below. Funds still pay real parts, vehicle commissioning, transport services and emergency repairs.
+- The campaign uses deliveries and event counters, never inventory subtraction from acceptance-time snapshots.
+- KSC is a permanent abstract receiving endpoint, not a vessel or a colony. It provides neither remote mining nor an unlimited remote power source. KSC may sell fuel to a transport physically present there, through an explicit local purchase; it cannot remotely refill colonies or depots.
+- Preserve ore provenance through mining, stacking, processing selection, shipments, and quest validation.
+- No required life support, radiation, city population, physical traffic, terrain flattening, or multiplayer.
+- No kOS, kRPC, Kerbalism, MKS, Kopernicus, or Kerbal Konstructs dependency. Unknown celestial bodies receive a default profile.
+- Orbital depots are in this release. The player launches a real depot-core part on an ordinary stock vessel and registers a valid orbit. Cargo transport models remain cosmetic. Stock vessel construction is deferred.
+
+### 1.3 Modes
+
+Career is the reference campaign mode. Science mode has campaign blueprints and contracts only if the verified stock contract integration supports it; otherwise use the same quest records through the campaign window, with no funds or reputation transaction. Sandbox has every blueprint available by default and zero funds costs, while power, inventory, material construction costs, transport, and optional wear still operate. Sandbox also supplies the same starter kit; optional debug grants are explicit and campaign-ineligible. Offer a sandbox campaign challenge toggle using the campaign window, without pretending Mission Control exists there.
+
+## 2 Architecture and ownership
+
+Use C# 9, net48 for the KSP plugin, netstandard2.0 for the pure simulation, and net8.0 for tests. Verify target runtime compatibility before building features.
+
+```text
+Lodeworks.Sim
+  InventoryMath, ReservationBook, AllocationPolicy, RecipeMath, ExtractionMath, PowerMath, WearMath, FaultMath
+  FuelMath, ManeuverBudget, TransportPlanner, DepotSimulator
+  ShipmentMath, RouteScheduler, DispatchPolicy, BerthScheduler, WaitGraph
+  NetworkDiagnostics, NetworkForecast, ColonySimulator, WorldSimulator
+  CampaignEvaluator, deterministic hashes, config validation, schema migration
+Lodeworks.Ksp
+  LodeworksScenario, LodeworksHab, LodeworksDepotCore, endpoint discovery, contracts
+  BlueprintAdapter, celestial environment adapter, UI, visuals, save adapter
+GameData/Lodeworks
+  Parts, Resources, Recipes, Buildings, BodyProfiles, Campaign, Transport
+  Localization, Icons, Settings, version metadata
+```
+
+Ship both Lodeworks.dll and Lodeworks.Sim.dll. Never ship KSP/Unity assemblies or test dependencies. Pin build dependencies and record their versions. KSPBuildTools is a build dependency only; verify its packaging behavior for both output assemblies.
+
+The scenario owns colonies, orbital depots, buildings, batches, veins, fuel-feed reservoirs, routes, located vehicles and their onboard propellant, shipments, campaign progress, unlocks, and simulation clocks. The hab persists only anchor identity and deploy state needed to reconnect to scenario records. Never have competing converter state on both a PartModule and a building record.
+
+KSP integration gathers validated environment and crew snapshots, advances the pure simulation, and presents resulting state. UI commands use the same transaction methods as automated commands. Never modify inventory directly from IMGUI drawing or an animation callback.
+
+Use stable colony, building, route, depot, vehicle, transport-slot, shipment, contract-instance, and event IDs. Vessel GUIDs are references, not colony identity. Use invariant serialization and deterministic ordering by stable ID.
+
+## 3 Colonies and placement
+
+### 3.1 Deployment
+
+The hab is lw-hab-250. It has no crew seats; a stock crewed part attached to the same vessel supplies crew. Crew efficiency is applied to processing and extraction, not autonomous transport or unmanned depot transfer operations.
+
+Each hab carries a persisted starter-kit inventory and immutable grant receipt tied to the actual part identity. This is prefabricated equipment, not seed ore or free fuel. Grant once per newly launched hab after valid deployment, never once per scene/colony ID; moving or redeploying the same hab carries its remaining kit state rather than resetting it. A newly launched replacement hab is a genuinely new paid part and may have its own kit.
+
+Create a colony only after an explicit Deploy Colony action on a landed vessel. Refuse prelaunch, orbiting, flying, splashed, Sun, and terrainless-body deployment. Show the actual reason. Do not award seed inventory in the shipped configuration.
+
+Measure terrain and validate placement before committing the colony. Deployment cannot first create inventory and later discover that the site is invalid. Store bodyName, latitude, normalized longitude, heading, anchor part identity, and colonyId. The cell and surveyed site remain fixed after founding.
+
+Allow one deployed colony anchor per vessel. Refuse deployment of a second anchor on that vessel. If docking joins two already deployed colonies, suspend industry and transport departures for both until separation restores valid anchors; do not merge or delete ledgers. Remap vessel references using anchor part identity after docking/undocking.
+
+If an anchor is no longer landed or moves more than 20 m from its saved site, suspend extraction, production, and departure. Preserve inventory. Resuming requires return within 20 m and a valid landed state, or explicit relocation. A pushed hab cannot mine the previous cell from elsewhere.
+
+### 3.2 Deck
+
+Use a 24 m square deck with a 5 by 5 placement grid; grid indices -2 through 2, spacing 4 m. The hab occupies 0,0. One building per remaining slot. Cosmetic models must fit their footprint. A transport terminal occupies a grid slot and contains the pad visual; departing models do not require an additional vessel.
+
+Convert corner offsets to geographic coordinates using stored heading. Raycast terrain first, excluding vessels and Lodeworks objects; use a verified PQS height query as fallback. Retry up to ten frames after load for missing terrain colliders. Place deck altitude 1.5 m above the highest corner. Reject new sites with corner height difference over 8 m or atan(heightDifference / 24 m) over 15 degrees. Cap visible legs at 8 m. Never reject an existing save merely because terrain LOD changes.
+
+Parent visual roots to the anchor and calculate their local pose from saved geographic placement. Account for vessel orientation; parenting alone does not keep a deck level if the hab tilts. Rebuild after load, and destroy visuals when packed/unloaded. Do not store raw world position or edit PQS.
+
+### 3.3 Placement from the hab
+
+Open the hab PAW and select Open Lodeworks -> Buildings. The catalog has Included kit, Build more and Upgrade controls. Select a building, display a deck-local ghost at the hovered grid cell, rotate where useful, and click to place. Preview occupied footprint, availability, operating draw, rate/capacity and cost. Invalid placement is red with its actual reason. Escape/cancel changes nothing. Keyboard/controller alternatives may select a cell by dropdown; no raw world-coordinate entry.
+
+Included kit consumes a stored prefab token and installs a complete Tier 0 building immediately. It does not consume Metal/Parts. Build more reserves all listed materials from the local ledger and starts a 30 UT-second construction job using 2 colony power/s; Upgrade uses its incremental recipe and a 60 UT-second job. One automated builder job runs per endpoint; no Kerbal EVA clicking or loaded-scene waiting is required. Pause on no power or invalid anchor. Integrated solar/generator output still follows power simulation. Building jobs join the same chronological simulator and are persisted.
+
+Advance to command UT, validate blueprint, kit/material availability, grid, storage and anchor, then commit atomically. A failed command creates no row, consumes no token/resources and pays no fee. Materials reserved for construction cannot also be shipped or used for maintenance. An unfinished footprint remains occupied but adds no production/storage capability until completion. Its construction materials remain accounted in a job escrow. Cancel before completion restores all reserved materials if capacity permits, otherwise refuse cancellation until space is made; no partial phantom refund.
+
+Move a completed building within the deck for free. Upgrade replaces its stats in the same grid slot, preserving condition, recipe/batch selection, machine identity and fault/repair state; it does not restore condition to 1 for free. Do not upgrade while its repair/transport job is active. New maximum rate/capacity applies at completion; old production machine is stopped during upgrade. Storage retains its old capacity until the upgraded capacity commits; an unfinished upgrade cannot hide already stored goods or release reserved cargo space. Capacity upgrades cannot create inventory or propellant.
+
+### 3.4 Included starter set
+
+The hab includes its built-in basic smelter, owned 20 power/s starter generator, 2000-unit battery and small integrated storage. These require no extra placement. Its separate included kit has exactly one of each:
+
+| Included placeable | Count | Purpose |
+|---|---:|---|
+| Basic ore drill | 1 | Mine graded ore |
+| Fuel-feed pump | 1 | Obtain refinery feed without consuming all campaign ore |
+| Basic refinery | 1 | Make stock LiquidFuel/Oxidizer from ore or feed |
+| Basic transport terminal | 1 | Handle surface cargo and later fueled launches |
+| Ore bin | 1 | Store mined batches |
+| Fuel-feed bin | 1 | Buffer raw feed |
+| Metal bin | 1 | Store expansion materials |
+| LiquidFuel tank | 1 | Store the stock fuel component |
+| Oxidizer tank | 1 | Store the stock oxidizer component |
+
+These occupy nine of the available 24 deck cells when all placed. Placement order is the player's choice. A tutorial suggests ore drill -> ore bin -> Metal bin -> refinery/pump/feed bin -> separate fuel tanks -> terminal. A starter terminal may be placed before c01, but its transport services stay locked until the campaign reward. Baseline capabilities must allow production and manufacture of extra basic storage before any advanced blueprint.
+
+Free starter equipment cannot be sold for funds or salvaged into manufactured material. Dismantling a completed starter piece returns its original token, never a new token plus Metal. The piece's condition/fault and identity stay on that token; replacing a worn drill from the same token cannot repair it for free. Upgraded starter pieces return a packed piece at their current tier/state, keeping the upgrade's material investment; they cannot repeatedly refund it while retaining an upgraded prefab. Extra material-built pieces salvage 50% of actually paid Metal/Parts at completed dismantle, never more than the original paid recipe. Show and confirm permanent loss of the remaining material. No refunds for debug-granted equipment.
+
+A hab variant's built-in terminal occupies no deck slot and fulfills the starter terminal entitlement: mark that token installed-in-hab rather than granting a duplicate free terminal. Variants improve their integrated equipment and storage through their explicit profiles, not by receiving multiple starter sets. Initial part prices/masses include their prefabricated kit; record kit mass/cost in the part config and do not mint another paid component on every deployment. Detailed surface-ledger ground-facility mass remains an abstraction, but the player must launch the actual kit-bearing hab.
+
+### 3.5 Expansion and dismantling
+
+Early extra buildings cost Metal only. The first shop costs no Machine Parts because it must be capable of making the first Parts. Advanced buildings/upgrades use both Metal and Parts. Repair continues using Supplies. LiquidFuel/Oxidizer are operating propellants, not a construction currency.
+
+The player can use locally produced materials or optionally import them from another colony. Local production is sufficient for startup and basic expansion; never force importing a construction kit just to begin. Campaign contracts unlock blueprints and remain the main progression quest giver; resource production pays the cost of applying those blueprints.
+
+Do not dismantle a machine being repaired, a terminal with occupied vehicle/handling jobs, or storage whose removal leaves inventory plus reservations above remaining capacity. Salvage itself requires destination storage room before commitment. A building with an unpaid/unfinished construction job follows cancellation rules rather than receiving completed-building salvage. Capacity changes, demolition and salvage occur once at command UT; repeated clicks/reload cannot duplicate materials.
+
+Relocation disables routes, resolves/export/discards inventory with explicit confirmation, and packs remaining starter pieces back into the hab with their saved tier/condition. Other equipment must be salvaged or left behind explicitly; starter-kit entitlements never reset. Ground depletion stays. A new site receives a new colony identity but references the same hab's remaining kit receipt. Orbital depots instead retain their core's built-in starter capabilities; extra modules follow material construction and physical mass accounting.
+
+### 3.6 Colony footprint and expansion
+
+The 24 buildable cells are an intentional v1 limit. No extra deck or merged colony inventory in this release. Upgrade storage/machines in place, dismantle unneeded equipment safely, or launch another hab and connect its separate ledger through normal surface/rocket services. Nearby colonies share geographic deposits where applicable, not storage, crew, power or free transfers. Instantaneous local transfers mean transfers within one endpoint only.
+
+The grid UI shows used/free cells and the footprint of queued jobs. Before starting a build, show the remaining cells and whether the endpoint still has space for the player's selected next facilities; this is advisory, not an invented mandatory layout. Provide a compact starter-layout example that fits all nine tokens plus expansion storage, a shop and power. Packed starter pieces remain recoverable under section 3.4. Never silently expand the deck when storage is full.
+
+## 4 Inventory and provenance
+
+### 4.1 Goods
+
+| Kind | Internal identity | Density t/unit | Uses |
+|---|---|---:|---|
+| Graded ore | batch ledger entry | 0.010 | Campaign deliveries and smelting |
+| Metal | FoundryMetal | 0.010 | Basic construction, storage, upgrades, processing and commercial orders |
+| Slag | FoundrySlag | 0.010 | Optional storage/export; dump by default |
+| Machine Parts | FoundryParts | 0.005 | Advanced construction/upgrades and commercial/campaign orders |
+| Supplies | FoundrySupplies | 0.002 | Locally manufactured maintenance material |
+| Fuel feed | internal feed ledger | 0.005 | Pumped raw material for the refinery |
+| Liquid Fuel | stock LiquidFuel metadata; ledger inventory | Read verified stock density | Transport fuel and explicit manual stock transfer |
+| Oxidizer | stock Oxidizer metadata; ledger inventory | Read verified stock density | Rocket oxidizer and explicit manual stock transfer |
+
+Resource definitions may supply stable metadata and localized names, but no Lodeworks tank consumes these goods in v1. Stock Ore is never consumed or redefined. LiquidFuel and Oxidizer definitions are also never redefined. Read their density and unitCost metadata from the installed game, validate it, and marshal immutable values into the pure sim. Transport mass includes cargo, structure, onboard propellant, and fuel carried as cargo.
+
+Batch fields: batchId, originBody, originBiome, grade, units, provenanceClass, campaignEligible. Mined batches are eligible; debug/tutorial grants are ineligible. Origin never becomes the receiving body's identity. Smelting consumes ore and does not produce eligible ore again.
+
+Stack only entries matching originBody, originBiome, exact campaign grade band, and provenance eligibility. Grade bands: poor [0,0.40), normal [0.40,0.70), rich [0.70,1]. Store weighted average grade. Campaign ore filters use these bands, not arbitrary minimum-grade thresholds; therefore averaging within a band cannot turn poor ore into rich qualifying cargo. If later adding exact-grade objectives, preserve sublots before enabling those objectives.
+
+Default processing selects oldest eligible stored batch by creation sequence, then batchId. UI allows richest first, poorest first, or a pinned batch/band. A policy is persisted. Switching policy never changes batch grade or inventory.
+
+### 4.2 Resource-specific storage
+
+Every storage building has exactly one selected resource kind, locked when built. An ore bin holds all graded ore batches against one combined ore cap; grades/origins still stay separate in inventory. A LiquidFuel tank cannot hold Oxidizer; Parts bins cannot hold Metal. No universal silo automatically grants every resource 4000 capacity. Use distinct catalog names/colors/icons even if primitive art is reused.
+
+| Resource | Hab integrated capacity | Basic dedicated unit added capacity | Advanced unit added capacity |
+|---|---:|---:|---:|
+| Graded ore | 100 total ore units | 400 | 1600 |
+| Metal | 100 | 400 | 1600 |
+| Slag | 0 | 400 | 1600 |
+| Machine Parts | 20 | 200 | 800 |
+| Supplies | 20 | 200 | 800 |
+| Fuel feed | 100 | 400 | 1600 |
+| LiquidFuel | 45 | 2000 | 8000 |
+| Oxidizer | 55 | 2000 | 8000 |
+
+The basic hab holds only 0.5 t usable stock-density propellant in its integrated buffers. Its included separate tanks must be placed for a larger fuel reserve. Empty starter/storage buildings do not grant content. Show integrated and building-added capacity separately. Storage can be duplicated within deck slots or upgraded in the same slot. Do not allow resource switching while a bin is occupied, reserved or referenced by jobs/routes; v1 requires dismantle/rebuild for a different resource type.
+
+Basic storage recipes are baseline blueprints. Advanced non-fuel storage follows c05; advanced LF/Oxidizer tanks follow d01 and still require locally made or delivered Parts. Parts/Supplies bins may be built before the shop unlock, but have no output until the recipe unlock. Advanced storage is the c05 reward and costs Parts. A finished bin changes only its own resource cap. Filled removed storage must be emptied first, not silently dumped into hidden hab storage. Depot-specific dedicated modules follow section 9.5; core-built capacities are limited but real, and expansion is per resource as well.
+
+Capacities are additive only for matching resource kinds. Full non-dump outputs stop their entire recipe. Slag dump tracks discarded totals but creates no credits or campaign progress.
+
+### 4.3 Transactions
+
+All amounts must be finite and nonnegative. Reject NaN/infinity and invalid IDs at input boundaries. Clamp floating residue only within epsilon 1e-9; do not conceal meaningful shortages.
+
+Career funds are owned by stock Funding, not copied into an independent colony currency. The adapter supplies a validated funds budget and commits actual charges/refunds through verified stock APIs on the main thread. Every funds operation has a saved receipt and is reconciled after reload; never replay a charge merely because a cosmetic model respawned. During catch-up, do not spend the same available funds concurrently through two routes. Pause a departure if its funds transaction cannot be committed, and preserve the remaining simulation cursor.
+
+Use commandId to reject duplicate commands within the saved command ledger. A departure reserves destination cargo space and berth, validates vehicle location/range and its fuel plan, pays handling power/funds, loads source propellant onto the vehicle, removes source cargo, and creates its shipment atomically. Burn events consume the vehicle propellant later; do not also consume the same fuel from source inventory at every maneuver. On any failure nothing changes. Do not debit funds and discover afterward that inventory validation failed.
+
+Reservations reduce usable destination space for both arrivals and production. Released reservations cannot create negative reserved capacity. Storage upgrades/dismantling validate this invariant. KSC is a consuming endpoint and does not reserve warehouse capacity.
+
+### 4.4 Unified reservations and allocation
+
+Implement ReservationBook in Lodeworks.Sim as the sole authority for promises against inventory, tank space, vehicle capacity and handling resources. All constructors, routes, maintenance, refueling and manual transfers call it; no subsystem keeps a competing mutable reserved-total dictionary. Derived UI totals are read-only. Each commitment has reservationId, ownerId/type, endpointId, resource or slot, quantity, eligible lot references where required, createdUT, priority, state and release/commit receipt. Reservation entries are persisted with schema 6.
+
+| Concept | Effect |
+|---|---|
+| Protected stock target | Persisted policy floor used by automatic consumers/exporters; does not subtract matter or reserve specific lots |
+| Committed matter reservation | Claims existing specific eligible inventory for one job; unavailable to every other consumer |
+| Incoming capacity reservation | Claims destination capacity without adding inventory or physical mass |
+| Forecast requirement | Read-only expected future need; never treated as guaranteed fuel or stock |
+
+For a consumer, usable inventory equals physically available, unescrowed matter minus committed claims and applicable protected floors; clamp only numerical residue. Multiple floors protecting the same stock use the maximum applicable floor, not their sum. Campaign ore targets and player floors protect matching eligibility/origin/band sets; keep overlapping sets explicit so broad and narrow filters cannot double-count protection. A quota protection is bounded by the remaining eligible objective amount minus eligible assigned consignments already committed/in transit. It is not a promise that ore will exist. Quota-authorized export may consume its own protected quantity; unrelated export/refining cannot. Processing policies select only uncommitted lots.
+
+Escrow physically owns material removed from inventory; its reservation refers to that escrow and must not subtract the same units again. Transition existing stock -> reserved -> escrow/onboard -> consumed/delivered exactly once. Future fuel production and en-route fuel cargo are forecasts until material arrives and is committed; auto-dispatch requiring destination fuel must have actual guarantees under section 9.7.
+
+Existing committed jobs win over new requests; priorities never steal a live reservation. Simultaneous new automatic requests sort by priority, request-createdUT, then stable ID. Assign higher shipped-default priority to maintenance and operational refueling than discretionary exports; construction uses explicit player commands. At equal UT player commands follow section 12's ordering. A manual build requiring 60 Metal from 100 commits it; a later route asking for 80 sees only 40, and either waits or uses an allowed partial manifest. Reversing the chronological requests can reverse the result, deterministically.
+
+Manual stock transfers and override commands show affected protected floors. Overriding a floor requires an explicit command; canceling committed reservations requires showing all affected jobs/plans and applying each job's cancellation rules before revalidation. Never silently release propulsion or return guarantees. Cancellation/owner destruction releases claims once; rebuilding reservation indexes on load validates quantities and quarantines conflicts instead of duplicating stock. Show owner, quantity and reason for unavailable inventory.
+
+Implementation: first build pure Reserve/Commit/Release/Query operations and conservation fixtures; then migrate callers to these APIs; finally integrate chronological competition. Tests include construction vs export, refinery vs quota, overlapping floors, two tugs vs stock transfer, escrow accounting, partial release, duplicate release, and reload with active reservations.
+
+## 5 Mining and deposits
+
+### 5.1 Separate extraction
+
+Drills extract into stored ore batches even if every smelter is off. Smelters process stored batches even after the source vein is exhausted. Never apply vein fullness to an already mined batch's processing rate.
+
+Cell size is 0.5 degrees. Normalize longitude to [-180,180), clamp latitude to [-90,90], and define the +90 pole index as the final valid latitude cell. Store cellId = bodyName|latIndex|lonIndex. All colonies in the same cell share its remaining ore and initial grade. Display this before deployment so two nearby habs cannot appear to own independent deposits.
+
+Use stable FNV-1a hashing of UTF-8 canonical values, not string.GetHashCode or Unity randomness. Initial grade = 0.25 + 0.70 * hashUnit(bodyName, latIndex, lonIndex, "grade"). Initial capacity = 20000 * veinScale * clamp(stockOreAbundance,0.05,1). Query stock abundance through a verified read-only API; if unavailable, use 0.5 and show that the deposit is estimated. Persist capacity/grade on first survey; later changes to profiles cannot refill an old deposit.
+
+Provide a read-only prospecting panel for the current site and discovered colony sites. It shows grade band, estimated capacity, hardness, power demand, and shared cell identity. No scanning minigame and no automatic reveal of every planetary deposit.
+
+### 5.2 Declining extraction
+
+Basic drill nominal rate = 0.50 ore units/s before crew. Base draw = 6 colony power units/s multiplied by hardness and crew. A running drill's actual rate falls with remaining/capacity. Zero power, full storage, no crew, or invalid site stops it.
+
+Use the analytic solution when fill varies: with nominal rate q and cell capacity C, remaining(t) = remaining(0) * exp(-q*t/C); extracted = remaining(0)-remaining(t). Power use scales with the same fill, giving 12*hardness power units per extracted ore unit. For multiple active drills in one cell, sum q, then allocate extraction proportionally over the same interval; never let iteration order let each drill see a fresh deposit. Split at storage or power exhaustion events.
+
+At remaining <= max(1e-6, C*1e-6), explicitly extract the affordable residual and mark exhausted. Handle insufficient power/storage by leaving residual until affordable. This prevents an asymptotic deposit from claiming to be empty while never finishing.
+
+### 5.3 Body profiles
+
+| Body | Metal yield factor basis | Hardness | Vein scale | Intended role |
+|---|---:|---:|---:|---|
+| Kerbin | 0.22 | 1.0 | 1.0 | Training and manufacturing |
+| Mun | 0.35 | 1.6 | 0.6 | First off-world source |
+| Minmus | 0.55 | 0.8 | 0.25 | Rich small deposits |
+| Duna | 0.40 | 1.2 | 1.5 | Larger sustained production |
+| Ike | 0.38 | 1.1 | 1.0 | Duna system supply hub |
+| Dres | 0.48 | 1.4 | 1.2 | Remote high-value source |
+| Laythe | 0.28 | 1.3 | 1.0 | Difficult receiving/manufacturing site |
+| Vall | 0.42 | 1.1 | 1.2 | Jool system producer |
+| Tylo | 0.45 | 2.0 | 2.0 | Large but costly deposits |
+| Bop | 0.50 | 1.0 | 0.5 | Small rich source |
+| Pol | 0.55 | 0.8 | 0.5 | Efficient remote source |
+| Eeloo | 0.50 | 1.3 | 1.5 | Late campaign production |
+| Eve | 0.40 | 1.8 | 2.0 | Expensive export challenge |
+| Gilly | 0.48 | 0.7 | 0.3 | Small efficient source |
+| Unknown landable body | 0.30 | 1.2 | 0.5 | Safe fallback |
+
+These are gameplay settings, not claims about real geology. No colony on Jool or the Sun. Load profiles from configs into the sim; do not embed the balance table in code. Profile changes affect future rates, not stored ore origin/grade or existing vein capacity. The tenfold initial-capacity increase from revision 2 is intentional: campaign ore and propellant production compete for the same finite ore, so the previous tiny deposits would cause excessive relocation. Do not multiply existing saved deposits during migration; new sites use the new default.
+
+## 6 Processing and crew
+
+Recipes run independently per building. A hab has one basic smelter. A shop selects machine or pack mode; it cannot run both simultaneously.
+
+| Recipe | Inputs per second | Outputs per second |
+|---|---|---|
+| Smelt | 0.50 batch ore; 12 colony power * origin hardness | Metal = 0.50 * grade * origin yield; Slag = 0.50 - Metal |
+| Machine | 0.05 Metal; 8 colony power | 0.02 Parts |
+| Pack | 0.02 Metal; 4 colony power | 0.05 Supplies |
+
+Apply one crew factor and one RateMultiplier to nominal rates, exactly once. Stored ore uses its origin profile; moving ore to Kerbin cannot rewrite its yield/hardness. Slag is dumped beyond capacity by default; player can disable dumping. When enabled, no storage space for slag does not stall the recipe. Machine/Pack are abstractions, not mass-conserving chemistry; do not falsely describe them as conserving mass. Smelting conserves ore/metal/slag mass.
+
+Crew factors: no crew 0; crew but no Engineer 0.50; Engineer levels 0..5 = 0.60,0.75,0.90,1.00,1.15,1.30. Highest Engineer on the anchor vessel applies. Repairs require an Engineer. These factors deliberately replace the old contradictory table. Persist crew snapshots for scene gaps and update after advancing to the crew-change timestamp. Missing unloaded crew data uses the last verified snapshot and logs once; do not interpret API failure as crew death.
+
+RecipeMath aggregates duplicate input and output resource rates before computing limits. Inputs and non-dump outputs limit the entire recipe. Return actual active time, deltas, dumped amounts, and final limiting reasons. Shortage flags describe constraints at the final limit, not every constraint encountered while iterating. No input/output leg with zero rate creates invalid division. Pure math must not mutate caller pools.
+
+## 7 Reliable colony power
+
+### 7.1 Explicit owned system
+
+Every deployed hab includes a colony battery (2000 power units) and a starter generator (20 power units/s). These are integrated ledger components with cosmetic visuals, not stock vessel generators. The starter generator is a deliberate gameplay abstraction with no carried fuel requirement. The UI labels colony power separately from spacecraft EC.
+
+Factories, drills, and shipment departures use this colony battery and generation. Do not call RequestResource for colony power. Do not add stock panel output into this balance. This ensures one owner computes loaded and unloaded power and avoids competing background resource simulators.
+
+Building options: baseline basic battery bank adds 2000 capacity and costs 60 Metal with no Parts or campaign requirement; advanced battery bank adds 8000 capacity and uses the c03 blueprint and section 17 recipe; solar array rated 40 units/s at Kerbin's solar distance; generator upgrade raises starter output to 40 units/s; advanced generator produces 120 units/s. Continuous generators are abstract industrial utilities maintained through funds and maintenance, not delivered fuel. No perpetual claim about real reactor fuel is needed.
+
+### 7.1.1 Early surface transport reachability
+
+Retain full-cycle electric prepayment from the actual source battery; do not invent off-ledger energy storage. Basic battery banks are baseline buildings, separate from the advanced c03 reward, and receive no free charge on construction. Added empty capacity charges from owned generation. This lets local Metal production solve an early transport-energy shortage before Parts exist.
+
+Deployment/prospecting preview includes great-circle distance to KSC, a basic electric quote for 100 ore units (1 t), full-cycle power requirement, current battery capacity, additional basic banks needed, build cost/cells and charging estimate. Show accessible-now, accessible-after-baseline-expansion or unsupported. The tutorial recommends a site within current range, but distance alone does not forbid a valid colony. Explain the Engineer repair dependency before deployment; no Engineer is a warning, not a new deployment restriction.
+
+For the shipped baseline, 100 ore costs 200 transport power plus max(120,distance/80) power for empty return. With capacity 2000 the ideal maximum range is 144000 m, ignoring other committed demand. Freeze this independent fixture. Test farther sites becoming feasible after locally built banks, empty added capacity, power competition, deck limits and c02 access without advanced unlocks. Quotes show the maximum feasible load and full-cycle power instead of a generic fuel warning.
+
+### 7.2 Simulation
+
+For each interval integrate generation, machinery consumption, and battery charge together. Production can run from live generation with an empty battery. Never first run machines until the starting battery empties and only afterward apply generation. Distribute scarce power by persisted priority groups: maintenance, construction, ore drill, smelter, fuel-feed pump, refinery, shop; equal priority machines share proportionally to requested draw. The player may change priorities in the UI.
+
+Solar generation uses a documented sampled approximation: fixed absolute UT boundaries every 60 s, sample solar flux and geometric illumination at the interval midpoint; hold output constant within that interval. Compute body rotation/orbital position from verified celestial APIs for the requested UT, not the active camera's lighting. Include horizon night and parent-body occultation; local terrain shadows are not modeled. Inverse-square flux scales against Kerbin reference distance. Provide a pure geometry helper and tests. If the adapter cannot produce a valid environment, suspend solar contribution with a visible diagnostic; continuous generation still works.
+
+Use the same samples whether loaded or unloaded. Never resample based on frame duration or warp. Record approximation in README and UI. Split battery integration at empty/full times and activity changes. Clamp battery to [0,capacity]. A full battery discards excess generation; it cannot grant shipment credit or goods.
+
+### 7.3 Acceptance
+
+- A starter colony mines and smelts while unloaded without depending on spacecraft EC.
+- Empty battery with adequate continuous generation still supports production.
+- One hour loaded and one hour unloaded with the same snapshots have equivalent final inventory/power within declared numeric tolerance.
+- Day/night solar samples occur on identical UT boundaries under different tick partitions.
+- Factory consumption cannot also reduce stock ElectricCharge.
+
+## 8 Maintenance and faults
+
+Each drill, smelter, fuel-feed pump, refinery, shop, and continuous generator has condition [0,1]. Passive storage/batteries, terminals and transport hulls do not have condition wear in v1; do not invent an additional fleet maintenance system. Wear applies only to actual operating seconds; base wear 0.000002/s, configurable per building. Stop exactly at condition zero, including during long catch-up; do not apply a long productive step and discover afterward that it should have failed halfway through.
+
+Default mode supports automatic preventive maintenance once its service blueprint is unlocked at c05. Before c05, manual Supply-based service and the emergency Service Visit are available; an enabled AutoMaintenance preference does not bypass the blueprint gate. At condition <=0.35, a building with an Engineer, 20 local Supplies, and a functioning maintenance service begins a 60 UT-second service. Reserve Supplies once at start; the building pauses during service. Service proceeds loaded or unloaded and across warp, consumes its reservation at completion, clears faults, and restores condition to 1. Persist service state and remaining duration. If no supplies exist, continue until a fault/zero condition stops it and show the shortage. Disabling automatic maintenance permits manual start of the same job.
+
+The hab has an emergency Service Visit option costing 500 funds in career, or zero funds in other modes, with a 60 UT-second service time. It requires an Engineer but no Supplies. This prevents a first-colony deadlock where the shop needed to produce Supplies is itself broken. It services only the selected building and never adds inventory. Repeated jobs must charge once each. Supply-based maintenance remains preferable for established networks.
+
+Optional Hard Maintenance mode makes jobs advance only while loaded at warp <=4x. Persist pause state and show why. Default campaign does not require repeatedly visiting colonies to wait through repair timers. Crew departure pauses service; reservation remains. Cancel returns reserved Supplies, refunds no charged service-visit funds, and resets job state.
+
+Fault occurrence is deterministic: once per new 3600 s UT window for machines that actually operated during the preceding window, threshold = max(0,0.50-condition). Use hash(buildingId,window,"occurrence") for occurrence. Use a separate hash(buildingId,window,"type") for jam/wear/short with equal thirds. Jam stops; wear multiplies effective rates by 0.5; short triples power demand only. Faults do not stack. All three types must be reachable. Persist last evaluated window; machines off for years must not roll millions of idle faults.
+
+Difficulty options: wear multiplier, faults enabled, auto maintenance enabled, hard maintenance. No crew death or stock part failure system.
+
+### 8.1 Maintenance pacing acceptance
+
+At wear multiplier 1, uninterrupted operation reaches condition zero after 500000 s (about 23.15 Kerbin days); preventive threshold 0.35 occurs after 325000 operating seconds. These are initial game-balance values, not verified pacing. Wear uses actual operating time, so outages/services do not advance it. c05 still gates automatic preventive maintenance; before that, manual Supply service and the paid emergency visit remain available.
+
+The starter guidance recommends an Engineer and shows repair eligibility. A crew-only colony may operate at its stated efficiency, but cannot be presented as repair-self-sufficient. Engineer absence pauses repair with an actionable message; never generate an Engineer or convert API failure into crew loss.
+
+Calibrate c01-c05 using feasible flight windows and the starter production rates. Record service visits per campaign stage, forced colony switches, productive time lost and Supplies demand. Default service proceeds in background; no colony visit is required merely to watch a timer. Target zero mandatory scene visits solely for service timers and no mandatory emergency repair before the near-KSC c02 reference completion. Persistent early repair repetition requires an explicit balance amendment, not undocumented adapter changes.
+
+## 9 Fuel production and transport infrastructure
+
+### 9.1 Propellant resources and factories
+
+Use LiquidFuel plus Oxidizer for every rocket template in this release. Match the stock 0.9:1.1 unit consumption ratio; with stock equal densities this is 45% LiquidFuel and 55% Oxidizer by mass. Validate densities at startup and compute mixture mass from both; never assume one resource's units equal tonnes. Do not add hydrogen, methane, boil-off, or nuclear-only fuel modes yet. This is KSP-consistent fuel accounting, not chemical modeling of actual regolith.
+
+The basic refinery and fuel-feed pump are baseline buildings, available before the first off-world shipment. The first of each is included in the starter kit; extras are built from local Metal. Fuel is never granted by placing a building. A new endpoint must actually produce, receive, or explicitly buy local fuel before its transports can depart.
+
+The refinery has two mutually exclusive modes:
+
+- Ore ISRU consumes 0.25 units/s of Lodeworks graded ore plus 15 colony power/s. At default stock densities, produces 0.18 LiquidFuel/s, 0.22 Oxidizer/s, and 0.05 Slag/s. 80% of input mass becomes mixture; 20% becomes slag. Grade affects Metal smelting, not fuel yield. Consumed ore loses campaign eligibility and cannot be counted as returned ore. Origin still appears in production diagnostics.
+- Fuel-feed mode consumes 0.50 feed units/s plus 10 power/s. At default densities, produces the same fuel/oxidizer/slag outputs as above. No direct creation of fuel from electricity alone.
+
+Generalize rates from target mixture mass and runtime densities so changed metadata cannot create mass. Both outputs must have storage room; unlike Slag, neither fuel nor oxidizer is dumped by default. Production stalls if either would overflow. Crew, wear, repair, priority and background integration apply to the pump and refinery. Implement the recipe through the same resource math as the other factories.
+
+Pump output is 0.50 feed units/s at full reservoir and crew factor 1, using 6 power/s before crew. It taps an independent finite fuel-feed reservoir in the same geographic cell, not the metal-ore vein. Reservoir capacity = 20000 * volatileFactor units. Factors: Kerbin 2.0, Mun 0.5, Minmus 2.0, Duna 1.5, Ike 0.5, Dres 0.5, Laythe 2.0, Vall 1.5, Tylo 0.25, Bop 0.5, Pol 1.0, Eeloo 2.0, Eve 1.0, Gilly 0.25, unknown 0.5. These are configurable game abstractions; label the deposit Fuel feed, not a claim that raw finished rocket fuel lies underground. Apply the same analytic declining extraction/residual rule as ore, with no stock abundance query required. Multiple pumps share reservoir depletion.
+
+Base colony integrated and dedicated storage follows section 4.2. LiquidFuel and Oxidizer require separate tank placeables; building one does not add capacity to the other or to feed/ore/products. Display available mixture, individual components, and unusable imbalance. Allow fuel as cargo, either a paired mixture manifest or individual component manifest; paired shipments use the 0.9:1.1 ratio. Carrying fuel as cargo consumes payload mass in addition to propulsion fuel.
+
+Keep a refinery's reserve policy: do not consume ore earmarked for accepted export quotas or below a player-set ore reserve. Player can explicitly override this. No hidden infinite fuel reservoir or automatic remote purchase.
+
+### 9.2 Endpoints and vehicle location
+
+Endpoint kinds: surface colony, registered orbital depot, and ksc-receiver. Same-body surface service is a configurable electrically powered ground/drone abstraction and consumes power; any surface-to-orbit, orbit-to-surface, or cross-body route requires rocket propellant. Do not allow a ground drone to cross bodies or reach a station.
+
+Surface colonies require an enabled terminal. Depots require enabled cargo handling and berths. KSC has both inherently. Arrival to KSC consumes accepted ore/products for quest delivery; fuel cargo to KSC can be explicitly sold at stock metadata price after fees, with a preview, and does not earn an ore objective. A transport at KSC may buy its own next-leg fuel using actual funds; surface/depot remote fueling still requires local inventory or delivered fuel. Sandbox purchases are free at KSC only and are labeled local supply, not a physics exception throughout the network.
+
+Replace the old return-time-only slot with a real scenario-owned TransportVehicle record: id, templateId, homeEndpointId, currentEndpointId or transitId, cargo capacity, tank capacity, onboard LiquidFuel/Oxidizer, state, assigned route, paid hull cost, and availability UT. Cosmetic appearance does not define vehicle capabilities. A vehicle arrives physically in the ledger at its destination; it cannot simultaneously serve its origin or teleport home.
+
+Loading and unloading consume 0.5 colony power per cargo unit for rocket services, while the electric surface service uses its own table. Handling funds fee is 25 + 10*cargoMassT per rocket departure, and 25 + 0.2*cargoUnits per electric departure, charged once. These small local service fees do not replace actual fuel debits. KSC handling power is supplied locally with its service fee; a depot/colony needs its own power. Default surface terminal handling throughput is 1 t/min, upgraded 4 t/min, with one simultaneous loader; stage manifests before flight without delivering them prematurely. A cancelled loading job restores unburned reserved fuel/cargo within the transaction, but does not refund completed handling fees.
+
+Vehicles are commissioned through a terminal/depot hangar. Surface commissioning costs funds, represents local fabrication/service, requires no imported building materials, and takes 600 UT seconds to add an empty vehicle. Orbital commissioning instead orders a dry hull from a selected surface terminal; ship that hull to the depot as transportHull cargo with mass equal to the template dry mass, paying and consuming the actual ascent/transfer fuel. Arrival plus 600 UT seconds of setup converts the delivered hull into the located vehicle without changing total mass. Do not manufacture a dry tug/capsule magically in orbit for a funds-only fee. The hull order is paid once and retains its ID through delivery; the same hull cannot become two vehicles. This is automated transport hardware supply, not a required stack of Metal/Parts construction resources. The commissioning UI may arrange its hull-delivery route, but must show the costs/wait and require a feasible existing surface carrier. Never mint propellant with a hull. Retiring a vehicle returns its remaining fuel to available local capacity and refunds 50% of hull funds paid, once. If insufficient storage exists, refuse until fuel is transferred or explicitly discarded. Depot berth/hangar limits bound the fleet; one transport cannot be commissioned repeatedly with one paid receipt.
+
+Player route policy selects one-way relocation or a repeatable cycle with actual outbound/return edges. A repeatable vehicle is available at its home only after the return flight arrives and local turnaround is complete. Empty return flights require their own fuel budget. Fuel can be reserved at the destination before departure, or carried on board for return, subject to tank/mass limits. If neither is possible, block a repeat-cycle departure. A one-way relocation may proceed without a return plan, but show its new location and remaining fuel.
+
+### 9.3 Initial templates
+
+These configurable abstract craft profiles are starting balance values, not proof that a rendered cube could fly. The templates provide engine/tank/hull assumptions the planner can inspect. A template cannot traverse an edge outside its allowed role or range. transportHull is an internal cargo kind with immutable templateId and per-hull mass, not an ore/product resource; it can neither satisfy a resource quest nor be converted to propellant. Cargo capacity also limits hull delivery, so a light shuttle cannot carry a heavy tug whose dry mass exceeds its payload.
+
+| Template | Role | Dry mass t | Payload t | Max propellant t | Vacuum Isp s | Effective ascent Isp s | Max thrust kN | Hull funds |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Light shuttle | Airless surface/orbit and compatible direct routes | 0.8 | 1.0 | 5.0 | 345 | 300 | 120 | 3000 |
+| Atmospheric lifter | Kerbin/Duna/Laythe surface/orbit | 2.0 | 2.0 | 18.0 | 345 | 285 | 600 | 7000 |
+| Orbital tug | Orbit/orbit only | 0.8 | 4.0 | 8.0 | 350 | not applicable | 60 | 5000 |
+| Heavy orbital tug | Orbit/orbit only | 2.0 | 12.0 | 30.0 | 350 | not applicable | 200 | 14000 |
+| Heavy lander | Airless surface/orbit | 2.0 | 4.0 | 20.0 | 345 | 300 | 400 | 12000 |
+| Kerbin cargo capsule | Orbital Kerbin depot to KSC only, one-way | 0.3 | 2.0 | 0.5 | 310 | not applicable | 20 | 500 |
+
+Electric surface service remains an abstract non-rocket fleet template: basic payload 1 t, two power units per cargo unit, one vehicle capacity per terminal and 120 s turnaround; upgraded payload 4 t, 1.5 power/unit, two capacities and 90 s turnaround. Great-circle travel time = max(120,distance/80) s, with outbound and empty return legs tracked at the endpoints. Empty return uses one power unit per second of travel, paid from the source at dispatch, without manufacturing LF/OX. Validate that battery can pay the complete electric cycle. Surface service hull commissioning costs 1000/2500 funds for basic/upgraded and still starts with no cargo. These are explicit ground-service abstractions, not claims of realistic aerodynamic performance.
+
+Surface shuttle/lifter templates include configured heat-shield/aerodynamic capability; an orbital tug cannot enter an atmosphere safely just because fuel math passes. The light shuttle may perform a certified atmospheric entry at Kerbin for a one-way direct delivery using its included heat shield, but cannot then launch from Kerbin unless its ascent role/TWR/profile qualifies; do not assume every airless shuttle can return from an atmosphere. No baseline template is certified for Eve ascent. The Eve branch requires an original dedicated staged template, with calibrated stage profiles, added during its content phase; it must not use an arbitrary unlimited Isp/tank override. Until validated, offer no Eve surface-export contract. Every launch validates starting TWR >=1.2 using actual source surface gravity and worst planned launch mass. Impulsive orbital calculations are not a certification of a low-thrust ion transfer; no low-thrust template in this release.
+
+The cargo capsule returns by reentry and is retired at KSC after arrival, with no automatic replacement at orbit. Replacement capsule hulls must be delivered from a surface terminal to the Kerbin depot with actual launch fuel accounted; a paid order alone cannot teleport its structure into orbit. Its funds fee is charged once at commissioning; repeat routes commission replacement capsules using their assigned budget. Include real replacement hull fees and supply service in economics, not a free reusable vehicle fiction. Surface shuttle deliveries that stay in orbit do not get a free capsule attached later without commissioning one.
+
+### 9.4 Maneuver budgets and fuel math
+
+TransportPlanner builds a list of burns, coasts, cargo handoffs, refuels, and reserve maneuvers. It labels estimated/calibrated quantities and records assumptions in the route quote. It is a planning abstraction: it does not fly KSP vessels, but its mass and maneuver accounting must be internally consistent.
+
+Use the ideal rocket equation per burn with g0=9.80665 m/s^2:
+
+```text
+deltaV = Isp * g0 * ln(mBefore / mAfter)
+requiredBurnPropellant = mAfter * (exp(deltaV / (Isp*g0)) - 1)
+```
+
+Mass units can be tonnes consistently in the ratio. g0 is standard gravity, not the source body's gravity. For a specified flight plan, solve burns backward from its final dry mass, remaining cargo, and protected reserve, adding later-burn propellant to the mass carried through earlier burns. At a cargo unload or explicit refuel boundary, update mass appropriately. Never sum independently computed dry-only burn costs; that undercounts carried fuel. Forward-validate the solved plan against onboard tanks, engine mixture, payload limit, and launch TWR. Reserve is a configurable 150 m/s maneuver capability, carried and unspent unless an explicit recovery maneuver uses it. Track it separately from nominal burn consumption; do not multiply fuel by a mysterious safety factor on top of an already counted reserve.
+
+If a vehicle returns empty without refueling at the destination, outbound burns must carry the computed return propellant. If it refuels there, debit/reserve destination fuel and include its production/delivery in network cost. Persist plan fuel as actually onboard propellant; unused reserve remains on the vehicle or can be unloaded locally, and is never counted as consumed twice. More cargo increases burn fuel; carrying export propellant increases burn fuel; repeated burn events cannot consume the same propellant twice.
+
+Use these core equations for supported near-circular orbit legs around a common primary (mu in m^3/s^2, radii in m):
+
+```text
+aTransfer = (r1+r2)/2
+vCircular(r) = sqrt(mu/r)
+vTransfer(r) = sqrt(mu*(2/r - 1/aTransfer))
+dv1 = abs(vTransfer(r1) - vCircular(r1))
+dv2 = abs(vCircular(r2) - vTransfer(r2))
+coastSeconds = pi * sqrt(aTransfer^3/mu)
+```
+
+For body-to-body transfers, find the actual common orbital parent and use its mu and the bodies' orbital radii/validated near-circular approximation. Kerbin-Mun uses Kerbin-centered geometry; moon-moon uses the shared planet; interplanetary uses the Sun. Convert the associated transfer speeds to departure/arrival hyperbolic excess speeds. A local parking-orbit departure/capture burn is abs(sqrt(vInfinity^2 + 2*muBody/rParking) - sqrt(muBody/rParking)). Include both departure and arrival costs for powered capture. Nested hierarchy transfers assemble explicitly named parking/departure/coast/capture segments, never pass a moon's parent-relative radius into a Sun-centered formula. Provide tested reference cases for Kerbin-Mun, Mun-Minmus, Kerbin-Duna and Jool moons. For unsupported high-eccentricity/inclination/unknown hierarchies, refuse automatic fuel quotes with a diagnostic until a calibrated profile exists; do not replace them with a universal cheap flight.
+
+Inclination costs must be explicit. Use plane-angle from normalized orbital angular-momentum vectors and a conservative separate plane burn 2*v*sin(angle/2) at the selected low-speed node. Avoid double-counting a combined burn. Rendezvous/docking adds a configurable 50 m/s allowance once per depot visit. Station orbits are actual registered orbits; different altitude/plane cannot have identical costs merely because they share a body.
+
+Surface ascent uses body-specific calibrated surface-to-reference-parking-orbit delta-v, including gravity/drag losses; adjust altitude through the same orbit-transfer math. Initial calibration targets in m/s: Kerbin 3400, Mun 580, Minmus 180, Duna 1450, Ike 390, Dres 430, Laythe 2900, Vall 860, Tylo 2270, Bop 220, Pol 130, Eeloo 620. These are draft stock-KSP planning targets, not analytically verified measurements. Document reference parking altitude, template, starting TWR, latitude and actual test evidence in BodyTransportProfiles.cfg before accepting them. If a supported body is uncalibrated, label its quote Experimental and require explicit player opt-in; do not silently call it validated. Unknown bodies have no automatic surface quote.
+
+Airless landing normally uses the ascent budget as an initial calibrated descending budget; this is a conservative game approximation requiring tests. Atmospheric landing uses a separate reentry/terminal profile for compatible templates, not ascent delta-v in reverse. Initial Kerbin capsule profile: 100 m/s deorbit plus 100 m/s terminal/rendezvous allowance, certified only from the configured low-orbit envelope; no free deorbit from arbitrary interplanetary approach or high orbit. Kerbin/Duna/Laythe other atmospheric landing budgets must be independently calibrated. A direct Mun-to-KSC flight may use a valid low-periapsis atmospheric entry without first circularizing at a Kerbin depot; quote that alternative honestly. Do not make direct flight artificially pay orbital capture if it does not need it.
+
+Transit is now derived from the selected coasts plus calibrated ascent/landing and rendezvous durations. This replaces the old flat body-pair travel times. Near-circular Hohmann launch windows use deterministic relative mean motions and the required phase angle; wait until the next acceptable phase band, charge no burn fuel during waiting, and show departure/arrival ETAs. Same-body station rendezvous uses a bounded phasing model/calibrated allowance, not an instantaneous zero-time transfer for identical radii. High-accuracy Lambert optimization, gravity assists and real autopilot remain deferred. Phase windows/geometry assumptions must be the same loaded and unloaded; do not evaluate them from camera position.
+
+Fuel source references for implementers: NASA Glenn's original ideal rocket equation explanation, https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/ideal-rocket-equation/ ; NASA/JPL orbital mechanics reference, https://spsweb.fltops.jpl.nasa.gov/portaldataops/mpg/MPG_Docs/MPG%20Book/Release/Chapter7-OrbitalMechanics.pdf . These establish equations, not KSP balance values. Record formulas, dimensions and independently computed golden tests in DECISIONS.md.
+
+### 9.5 Orbital depots and station setup
+
+Add original parts lw-depot-core and lw-depot-core-large. Initial part cost is 6000/18000 funds, core dry mass 1/3 t; entry cost zero once blueprint and required stock research are satisfied. These dry masses exclude separately accounted ledger inventory and vehicles. The player launches one aboard a real station assembled with stock parts, places it in a suitable bound orbit, and registers it through the PAW. The launched core includes its initial modules and registration requires no Metal/Parts/Supplies cargo. Extra depot modules consume delivered Metal/Parts after registration; initial station operation must not require an expansion module to unload its own construction material. A depot starts with empty cargo and propellant ledgers; no free fill at registration. Built-in owned continuous power is 20 units/s and battery 2000; stock craft power remains separate, as at colonies.
+
+One active registered depot per connected vessel. Core identity survives vessel GUID changes. Two registered cores docking together suspend duplicate terminal operations until the player explicitly merges them through a ledger/reservation-preserving command or undocks. Never duplicate fuel capacity by toggling deployment.
+
+Baseline supported station envelope: orbit eccentricity <=0.05, inclination <=10 degrees relative to the route's common reference plane, bound to its named body, and periapsis above atmosphere plus 10 km or maximum terrain clearance plus 10 km, whichever is higher. Support broader planes only with validated plane budgets and departure geometry. Refuse registration if terrain clearance cannot be verified. Allow depots around gas giants in safe orbits but never surface colonies there. Prohibit Sun-orbit depots in v1 because they require a separate transfer model. Store orbital elements/epoch and anchor identity, not geographic latitude or raw world coordinates.
+
+Small depot: cargo cap 4000 ore units plus 4000 each product, 8000 units each fuel component, two berths, two hangar vehicle slots. Large depot: 16000 cargo/product caps, 32000 each fuel, four berths, four hangar slots. Add material-built modules/upgrades for specific cargo/fuel resources, berths and handling throughput through a depot module UI; these are scenario rows with cosmetic attachments, not secretly manufactured stock parts. Handle each resource's capacity independently. A cargo extension selects one resource and adds 4000 units; an individual LF or Oxidizer tank extension adds 8000 units of its selected component. Cargo extensions can upgrade fourfold after c05; LF/Oxidizer extensions can upgrade fourfold after d01. Both use the stated advanced material recipe. Berth/hangar extensions add one of each. Empty extensions never manufacture contents. Initial transfer throughput is 1 t/min and local refueling 1 t/min; large handling upgrade is 4 t/min. Include occupied berths and pumping time in route feasibility and throughput.
+
+Depots can receive fuel, store cargo, refuel arrived vehicles, consolidate shipments, and hand cargo to a different compatible vehicle. They cannot mine their orbit or produce fuel from nothing. No refinery in orbit for v1; surface extraction and refining supply them. Allow unmanned automatic operation; crew is not required just to receive/refuel. Depot equipment maintenance uses local Supplies/emergency paid service with the same reservation rules; if an Engineer is required for an actual repair, the player must supply one, while ordinary operation remains unmanned.
+
+Depot ledger cargo and fuel must affect its real vessel mass. Implement a verified IPartMassModifier or equivalent public per-part mass interface on the core, including packed/unloaded loading behavior. Added mass = sum(stored cargo densities + stored propellant densities + escrowed construction material mass + completed extra-module structure mass + awaiting-commission dry hull mass + physically stored commissioned transport dry/onboard mass); include cargo waiting on docked abstract vehicles while berthed, not ships in transit. Completed extra-module structure mass equals the mass of Metal/Parts actually consumed by its construction recipe, excluding core-built modules already included in core dry mass. Moving material from ledger to job escrow to completed structure preserves total station mass. Salvage returns half the paid material into storage and explicitly discards the rest; do not count both the salvaged material and removed structure. Berth/hangar visuals alone do not add mass. Reservations without delivered matter have no mass. Verify mass before/after delivery and stock fuel bridges; no prefab writes or whole-vessel rebuild every tick. Surface colony ledger mass remains an anchored ground facility abstraction; do not compare that exception to station maneuver physics.
+
+Capture and update actual depot orbit after real player maneuvers. Before a movement, advance simulation to the event's UT when observable. While a depot is thrusting, escaping, or invalid, block departures and new incoming plans; preserve cargo/reservations. Existing flights retain paid route plans and wait at a safe hold state if rendezvous is invalid; show the reason, do not teleport cargo to a moved station. Hold uses a configured maximum 1 m/s per Kerbin day of protected loiter budget for valid same-SOI orbital holds; if that budget is exceeded, mark needs-recovery and require a new feasible plan. Do not discard cargo silently or invent unlimited corrective fuel. Changes to orbital geometry after booking require an explicit replanned rendezvous with adequate fuel; no arbitrary cheap capture of an entirely different orbit.
+
+Destroying a depot loses its stored cargo/fuel and cancels its incoming capacity reservations. Incoming in-flight cargo follows the destination-lost rule; vehicles with carried recovery fuel may take a validated alternate endpoint, otherwise show stranded/lost according to the route state. Never convert lost cargo to a quest delivery.
+
+### 9.5.1 Berths, parking and safe queues
+
+Handling berths and hangar parking are distinct capacities. Small/large cores have 2/4 handling berths and 2/4 parking slots respectively. A resident idle commissioned vehicle occupies parking, not a handling berth. Arrival handling, unloading, refueling and departure loading occupy a berth for their actual jobs; initial one-loader/1 t/min handling is an additional shared throughput constraint. Moving an abstract vehicle between a local berth and reserved parking has no cargo/fuel teleport and no flight cost. Include its existing mass once regardless of local state.
+
+Before commissioning or assigning a resident vehicle, secure its endpoint parking entitlement. Before an incoming visit, reserve a berth-time job and a post-handling disposition: depart on a feasible booked leg, park in available reserved storage, or remain berthed with that occupancy explicitly blocking future jobs. Visitors count toward actual parking if they park; do not create unlimited visitor storage. Separate parking reservations at home guarantee space for repeat-cycle returns. A vehicle in transit has no physical endpoint mass; its home parking entitlement reserves capacity only.
+
+Reserve handling windows conservatively from known duration and earliest arrival. Window wait/coast must not hold a handling berth needlessly: stage a loaded vehicle in reserved parking when available. If a planned job slips due to power/fuel/orbit changes, reschedule affected future bookings deterministically and expose changed ETAs; never grant overlapping occupancy. Do not deduct flight fuel merely for changing a queue booking. Auto-dispatch validates safe arrival disposition and carried loiter/recovery limits; a booking is not unlimited orbital holding permission.
+
+Use priority then request-createdUT then stable ID, preserving active jobs. Higher priority new jobs do not eject a vehicle mid-handling. Returning vehicles and fuel-supply operations receive shipped-default priority above discretionary exports. Show occupied, reserved and available berth/parking/loader counts separately. Provide Move to Parking only when capacity and job state permit.
+
+Implement a bounded WaitGraph from existing structured blocked reasons: vehicles/jobs/requests are nodes; edges identify the owning reservation/job that prevents progress. Detect strongly connected waiting groups on relevant state transitions, not every rendered frame. A cyclic group with no scheduled completion, external supply or known window release is a potential deadlock; show involved entities and feasible remedies. Ordinary scheduled waits are not deadlocks. Auto-resolve only reversible requeue/release of unstarted soft bookings and moves into already available parking; never cancel paid construction, burn fuel, steal a committed return reserve or discard cargo to resolve a cycle. Otherwise pause affected new dispatches and show a specific intervention. Bound traversal to active records and profile the target network size.
+
+Tests: two parked tugs leave handling accessible; no parking overbooking; guaranteed home return slot; visiting tanker with full parking; loading/window wait releases berth when parking exists; power delay shifts bookings; fuel/berth circular wait is diagnosed; ordinary transfer-window wait is not; reload restores identical queues/mass.
+
+### 9.6 Manual bridge to stock spacecraft
+
+Add explicit Transfer to Station Ledger and Transfer to Stock Tanks controls for LiquidFuel/Oxidizer when the player's vessel is physically docked into the depot's connected vessel. Scope to chosen tanks reachable through verified stock resource-flow rules; no remote or proximity-only fuel teleport. Use RequestResource through a sign-verified broker for stock consumption/production and match ledger changes to the actual amount transferred. Process both mixture components transactionally where possible; if partial flow occurs, record exact actual quantities and display mixture imbalance rather than granting full transfer. Stop at source availability/destination capacity. The stock tanks and ledger never simultaneously own the transferred amount.
+
+Fuel moved into stock tanks becomes ordinary stock fuel with stock physics/mass. Fuel moved out becomes depot ledger mass through the core mass modifier; total connected-vessel mass must remain constant within tolerance for pure transfer. No automatic second background resource simulator. Disable transfer when packed if safe stock resource access is unavailable; loaded manual bridge is sufficient for v1. This lets depots refuel the player's own docked spacecraft as well as abstract haulers. Undocked stock ships remain ordinary KSP vessels and do not become automatic Lodeworks transports.
+
+### 9.7 Shipment lifecycle and reservations
+
+Shipment fields: shipmentId, consignmentId, cargo origin/eligibility sublots, planned endpoint itinerary, leg index, vehicleId, loaded cargo, onboard fuel, booked burns/coasts/windows, arrivals, cargo reservations, destination fuel reservations, berth booking, commandId and paid funds receipts. Shipments of transportHull use immutable hull IDs and template masses. Actual fuel amount belongs on the vehicle once loaded, with references from its flight plan; do not persist two mutable onboard balances.
+
+A consignment is the end-to-end cargo identity. Each leg has its own flight/shipment ID and vehicle; handoff preserves consignment provenance and claim state. Progression states: queued -> loading/refueling -> waitingWindow -> inTransit -> arriving/handling -> delivered-to-endpoint or waitingForSpace -> next-leg-queued -> finalDelivered. A vehicle has separate location/state and may wait for fuel without erasing cargo. No ETA may claim that the final destination received goods after only an intermediate depot arrival.
+
+Validate tank limits, fuel mixture, TWR where needed, enough onboard fuel for the planned burns/reserve, available source fuel above operational reserve, destination cargo capacity, booked berth, and required onward/return fuel guarantees before departure. Burn consumption happens at scheduled maneuver events; all timestamps and quantities persist. If a route needs a later refuel and that endpoint has no guaranteed available/reserved fuel, the quote is infeasible or explicitly conditional. Auto-dispatch requires guaranteed safe arrival/return policy; it cannot assume a future tanker will magically arrive. Each endpoint stores incoming propellant cargo after handling; keep a transported cargo manifest and vehicle propulsion tanks distinct until an explicit transfer moves material between them. Fuel-delivery routes use their own operational fuel reserve and cannot export their last launch fuel into a deadlock.
+
+Reservations normally guarantee storage. Legacy saves or exceptional corruption can leave cargo waiting, visible and still bounded by actual payload mass. Partial arrivals release only proportional reservations. KSC consumes final cargo once. Depot handoffs neither reset departure eligibility nor award KSC quest progress. Cargo dispatched before quest acceptance remains ineligible even if its last depot leg departs after acceptance. Setting cargo down in a depot cannot launder ore origin or debug eligibility.
+
+Source destruction after departure cannot erase cargo or charge fuel again. Destination destruction may trigger a fuel-feasible alternate plan if the player configured one, otherwise show the loss/recovery state. Cancel is allowed before irreversible loading/departure under an explicit refund policy; already burned fuel is never refunded. Cosmetics do not change state.
+
+## 10 Automated supply chains and network economics
+
+### 10.1 Route graph
+
+Routes may contain explicit endpoint itineraries, not just source/destination pairs: surface colony -> local orbital depot -> Kerbin depot -> KSC. Each leg selects a compatible located vehicle/template, cargo reservation, berth and refuel policy. Repeatable transport services and end-to-end cargo quotas are separate: a shuttle may cycle surface/depot while an orbital tug cycles two depots.
+
+Route fields: id, itinerary, cargo kind, origin/band filters, source reserve, dispatchBelow, targetAmount, maxPayload, dispatchPolicyId, assigned vehicle/service IDs, priority, enabled, quota contractId, fuelReservePolicy and last decision timestamp. Surface/depot stockpile rules count stored plus matching cargo already in transit and reserved along the itinerary. Avoid booking the same cargo into two onward flights. Intermediate buffers have explicit target caps; final-destination blocked state must propagate to upstream dispatch so fuel/storage is not consumed filling every depot forever.
+
+For KSC choose campaign quota or explicit continuous export. Campaign quota subtracts eligible end-to-end consignments in transit, including those waiting at depots; it stops at completion/cancellation. A delivery claim is made only at the contract endpoint; intermediate arrival is not a second claim. Continuous export uses a deliberate player amount/reserve choice. Canceled campaign cargo already flying continues to its booked endpoint without earning canceled progress; allow the player to stop later unstarted legs and store it at the intermediate depot.
+
+Refueling rules: keep depot at least X tonnes of usable mixture; dispatch fuel when below Y; preserve Z tonnes operational fuel at source. Count mixture bottleneck, local refuel reservations, en-route tanker cargo, export quota and vehicle onboard balances. The planner reserves fuel for transport before considering fuel export. A depot cannot promise the same fuel to two departing tugs and a docked stock vessel. Manual transfers honor outstanding reservations unless the user explicitly cancels affected plans.
+
+Use priority then request-createdUT then stable ID for competing requests, as defined in section 4.4. Wake scheduling on arrivals, fuel production/reserve crossings, window opening, berth availability, slot/vehicle turnaround, and absolute 60 s UT rule boundaries. Show blocked causes: not enough usable propellant, no safe return, tank/range/TWR violation, vehicle at another endpoint, destination fuel not secured, no berth, output full, funds, blueprint or quota satisfied. Route upgrades do not duplicate ships.
+
+### 10.2 Honest route comparison
+
+Route comparison quotes direct and selected depot paths for the same final delivered payload and declared vehicle return policy. Show fuel consumed, fuel loaded/carried, endpoint fuel debits, ore/feed equivalent, funds including hull replacement/maintenance, delivered tonnes per trip, final ETA, round-trip availability and sustained tonnes/day. Distinguish a one-way expendable capsule from a returned reusable shuttle. Include tanker burn fuel, empty returns and surface launches of replacement capsule/transport hulls in steady-state network cost; fuel delivered to a depot is not free because it was produced off-world. Include initial depot/hull investment separately from recurring operating cost and show estimated break-even deliveries when meaningful.
+
+Do not apply a blanket depot fuel discount or reduce a maneuver delta-v because an endpoint has a station. A depot is useful when it provides a genuine refuel boundary, lets a lightweight surface vehicle hand off to an efficient orbital vehicle, consolidates small loads, sources fuel from a low-gravity body, or avoids carrying empty shuttle hardware through the whole route. Extra parking-orbit capture/docking/plane changes may make some depot paths worse. Quotes must reveal that result.
+
+Refueling splits carried propellant across legs and can make a route fit a tank that cannot support a direct all-fuel-at-source mission; that does not prove lower total network fuel. Validate at least one useful configured depot network under steady-state full accounting, and at least one direct route cheaper than an unnecessary waypoint. Show the economic result rather than forcing a station detour for every shipment. The campaign teaches a local depot before longer supply chains, while leaving direct transfers available where a compatible fueled template can perform them.
+
+Acceptance: source-reserve fuel tanker sustains depot without consuming its last return fuel; multi-leg KSC quota counts once; returned vehicles have paid all return burns; station altitude/plane changes alter quotes; docked-stock refueling respects route reservations; route comparison includes actual carried fuel/hull costs and reproduces independently computed examples.
+
+### 10.3 Dispatch policy and stable replenishment
+
+Persist minimumPayloadFraction (default 0.8), maxWaitSeconds (default 21600), allowPartialAtTimeout (default true), maxPendingConsignments (default 2), replenishmentLow/High and hysteresis latch. Payload fullness is eligible cargo mass divided by the selected vehicle's configured payload cap after route maxPayload; cargo unit count is not a cross-resource fullness metric. Minimum dispatch threshold never exceeds remaining assigned quota or destination deficit: a final small quest shipment must be able to depart without waiting forever.
+
+Start wait timing when eligible uncommitted cargo first becomes available, using an absolute UT timestamp; preserve it across ticks, window waits and reload. Dispatch when threshold is reached, or timeout is reached and partial dispatch is enabled, subject to every safety/reservation/role/funds check. At zero cargo do not dispatch or start a new timer. After successful booking, reset/recompute against remaining cargo; do not repeatedly create timeout requests while a vehicle is unavailable. Count active assigned consignments, including intermediate waiting, against the pending limit until final delivery/cancellation/loss; distinct service legs do not count as new consignments.
+
+For replenish routes, enter refill mode at effective stock <=Low and leave at >=High, where High>Low. Effective stock is matching delivered stock plus guaranteed matching inbound minus committed withdrawals; expose each term. Do not treat merely planned cargo as inbound. Cap new consignments at High minus effective stock and downstream free capacity. Preserve refill mode between thresholds. Protected usable LF/OX reserves still use the mixture bottleneck, not total tank units. Never bypass operational reserves to reach a refill target.
+
+Competing requests use section 4.4; prefer older pending requests within a priority to avoid stable-ID starvation. Safety limits beat throughput targets. Deadlines/timeout authorize a partial load, not an unsafe departure. UI offers Full Loads, Balanced and Urgent presets as editable values; all presets use the same scheduler.
+
+Tests: 80%-full dispatch; timeout partial; final quota below threshold; hysteresis without oscillation; competing routes; max pending across multiple legs; downstream blockage stops upstream; resume after recovery; persisted timer/latch; identical result under arbitrary UT partitions.
+
+## 11 Contract campaign and blueprint progression
+
+### 11.1 Campaign authority
+
+Use one stable campaign definition with an acyclic prerequisite graph, and scenario-owned progress records. Career Mission Control contracts are the quest giver. Show current objectives, prerequisites, rewards, and explanatory text in a campaign tab as well. Do not auto-complete without acceptance. Main quests have no deadlines, do not charge failure penalties, and can be cancelled/reoffered with preserved progress. Optional commercial contracts may have deadlines and penalties.
+
+Contract acceptance records acceptedUT and event sequence. Only production/deliveries/deployments after acceptance count unless an objective explicitly says verify an existing colony or blueprint. Consignments first dispatched before acceptance cannot count, even if arrival or a later waypoint departure happens afterward. Cargo credit requires both qualifying departure and arrival.
+
+For the main campaign, imported ore goals measure ore units, not expected Metal yield. KSC consumes arrivals, so the same cargo cannot circulate and satisfy multiple quests. The first matching active main-campaign objective receives eligible cargo; excess is discarded as delivered cargo and shows a warning before manual dispatch. Do not award unsolicited funds for excess. Side orders have explicit shipment assignment; one delivery unit cannot count toward both a side order and main objective. A quest can accept multiple shipments and partial progress.
+
+Campaign progress uses durable objective counters and claimed event/quantity records, not current inventory. Sending goods elsewhere or consuming inventory cannot reduce completed production progress. Successful contract completion writes completion and reward entitlement once. The reward adapter applies unclaimed rewards idempotently and persists its receipt before another claim can occur. Reconcile contract saves/scenario records by contract instance ID; never rebaseline on load.
+
+### 11.2 Initial campaign
+
+One Kerbin day is 21600 UT seconds. These goals emphasize returned ore. Parts orders appear only after the player has learned basic mining/logistics.
+
+| ID | Prerequisites | Objective after acceptance | Permanent reward | Funds/rep |
+|---|---|---|---|---:|
+| c01 First Operation | none | Deploy a Kerbin colony, place its starter drill/ore bin and mine 50 ore there | Surface service activation; basic logistics controls | 5000/2 |
+| c02 First Delivery | c01 | Deliver 100 Kerbin-origin mined ore to KSC | Light shuttle, atmospheric lifter, orbital tug service; lw-hab-remote; lw-depot-core | 8000/3 |
+| d01 First Orbital Depot | c02 | Register a valid Mun or Minmus orbital depot and deliver 1 t of usable LF/OX mixture from a surface colony into its ledger | Advanced fuel-tank upgrade; advanced depot handling | 15000/4 |
+| c03 Mun Supply | c02 | Deliver 100 Mun-origin mined ore to KSC; waypoint delivery allowed, final endpoint must be KSC | Advanced drill upgrade; advanced battery bank; Kerbin cargo capsule service | 20000/5 |
+| c04 Minmus Samples | c03 | Deliver 75 Minmus-origin mined ore to KSC | Shop building and recipes; solar array | 25000/5 |
+| d02 Depot Supply Chain | d01,c03 | Deliver 100 off-world origin ore to KSC through a registered off-world depot and a registered Kerbin depot; transport onward with a separate orbital tug | Heavy orbital tug; lw-depot-core-large | 30000/5 |
+| c05 Industrial Orders | c04 | Produce 100 Parts after accept and deliver 50 of those newly produced Parts to KSC | Advanced dedicated storage; preventive maintenance service | 20000/4 |
+| c06 Automated Supply | c05,d02 | Deliver 20 locally made Supplies through an automated route to another off-world colony | Heavy lander; lw-hab-heavy | 25000/5 |
+| c07 Duna Industry | c06 | Deliver 200 Duna-origin mined ore to KSC | Advanced continuous generator; generator upgrade | 60000/8 |
+| c08 Duna Network | c07 | Deliver 100 Ike-origin ore to a Duna orbital depot, then deliver 100 Duna-origin ore to KSC | Two additional terminal/hangar vehicle capacities | 40000/6 |
+| c09 Remote Prospecting | c08 | Deliver 150 Dres-origin ore to KSC | Upgraded surface service; lw-hab-survey | 70000/8 |
+| c10 Jool Network | c09 | Deliver 50 origin ore from each of Vall, Tylo, and either Bop or Pol to KSC | Advanced drill second tier; logistics completion badge | 150000/15 |
+| c11 Outer Industry | c10 | Deliver 150 Eeloo-origin ore to KSC | lw-hab-endurance; campaign completion badge | 100000/10 |
+| b01 Eve Vehicle Research | c07 | Deliver 100 Gilly-origin ore to KSC | Dedicated Eve staged lifter, only after its template is validated | 40000/5 |
+| b03 Eve Export Challenge | b01 | Deliver 100 Eve-origin ore to KSC | Eve export badge; cosmetic industrial trim | 100000/10 |
+| b02 Rich Samples | c04 | Deliver 50 rich-band ore from each of Mun and Minmus to KSC | Prospecting UI grade comparison view | 30000/5 |
+
+For c05, newly produced Parts need eligible production lot records for that contract; exporting pre-existing Parts cannot satisfy the delivery leg. Treat these as internal eligibility sublots within the same Parts ledger, not a new resource. Consume oldest sublots deterministically and move tags with shipments. Document this narrower provenance requirement and test it. c06 similarly tags Supplies produced after acceptance. Other commodity contracts must declare whether production provenance is required.
+
+Quantities must be checked against low and typical deposit capacities, including ore consumed to fuel the network. Main c03 permits a direct early shuttle delivery if feasible; d01/d02 teach and then require a functioning depot network before c06. Do not require a still-locked capsule in d02: c03 unlocks it first. A d01 fuel delivery must contain fuel as cargo unloaded into the depot, not the vehicle onboard propellant already counted in its burns. d02 binds named depot IDs at acceptance and uses the consignment handoff history; touching a depot icon or rewriting an itinerary cannot satisfy it. A commercial fuel sale must consume fuel at the named endpoint and cannot repeatedly circulate the same mixture for reward.
+
+Quantities must be checked against low and typical deposit capacities. The listed values are initial campaign balance, not proof of one-site feasibility. Multiple colonies are permitted, but never conceal a multi-site requirement; show expected amount and deposit estimates. Main quests have no deadline because fuel production, departure windows, long interplanetary trips and finite deposits should not create impossible offers.
+
+Baseline capabilities exist before c01: basic hab, its smelter/generator/battery, exactly one complete included starter set, basic dedicated-storage recipes, and manual emergency service. First shop uses Metal only. All production needed to pay for extra basic buildings is available without Machine Parts. c01 unlocks the surface service needed for c02. Early rockets/depots/tugs unlock together at c02 so the player can bootstrap a genuine fueled network without needing its own later output. Ordinary stock research prerequisites may delay access to the basic hab but must not require a Lodeworks quest that needs that hab. No blueprint requires its own output or capability to obtain itself.
+
+### 11.3 Parts and unlock enforcement
+
+Campaign parts are original Lodeworks hab variants using referenced stock model paths until original art exists. All may establish a basic colony; variants improve built-in equipment without requiring a new resource catalog:
+
+- lw-hab-250: baseline; 2000 battery, 20 generation, base capacities.
+- lw-hab-remote: 4000 battery and integrated basic transport terminal, but no free vehicles or fuel.
+- lw-hab-heavy: 8000 battery, twice the baseline per-resource integrated buffer capacities, and two integrated vehicle hangar capacities, but no free vehicles or fuel. It receives one normal starter set, not multiple.
+- lw-hab-survey: remote capabilities plus richer on-site prospecting display; it does not reveal unvisited deposits globally.
+- lw-hab-endurance: heavy capabilities plus 40 continuous generation and built-in preventive service.
+
+Use one explicit blueprint registry mapping campaign rewards to part internal names, building kinds, upgrades, and service capabilities. No arbitrary stock engine or tank is locked or patched. Future rewards can add original parts through configuration.
+
+Before implementing the full campaign, prove a public-API adapter can keep unrewarded Lodeworks parts unavailable in the editor/R&D while enabling them per save after reward. Verify AvailablePart, ResearchAndDevelopment, purchase/tech state, editor refresh, and stock save behavior against installed assemblies. Do not assume setting a UI flag alone enforces a lock. The adapter must prevent ordinary entry-cost purchase from bypassing campaign requirements, and respect any stock science prerequisite. Granting the blueprint permanently satisfies the campaign requirement; no duplicate entry payment is required for the awarded Lodeworks part, but unmet stock tech still needs research.
+
+Prototype tests: locked part cannot be selected/bought; reward enables it; switching to another save restores that save's locks; sandbox has all parts; existing vessels with locked parts still load; an imported saved craft containing a locked part cannot be launched as a bypass in career (use a verified editor/launch validation API). Do not alter shared part prefab state or other saves. If public APIs cannot meet these conditions without Harmony, mark this feasibility phase blocked with observed signatures and the failing behavior. Do not replace actual part unlocks with a cosmetic badge and claim completion.
+
+### 11.4 Commercial contracts
+
+After c05, offer optional Metal and Parts orders delivered to KSC, and supply deliveries to named existing colonies. Reward funds and reputation, not mandatory progression blueprints. Select reachable existing endpoints and available service tiers. Deadlines must be at least known earliest round-trip/production estimate plus 10 Kerbin days; show assumptions. Never offer Sun/Jool surface targets. Cancel/fail cannot undo campaign blueprints or delete unrelated shipments. Failure funds = reward/5 and reputation penalty 2, applied once through verified stock contract mechanisms.
+
+## 12 Simulation ordering and time
+
+WorldSimulator.Advance(targetUT) is the sole clock owner. It advances colony extraction, processing, power, maintenance, shipments, vehicle arrivals/turnaround, routes, fuel manufacture, vehicle loading/burns, refuels, depot handoffs, orbital environment updates and campaign events in chronological order. Loaded, packed, unloaded, space-center, and tracking-station views use the same function. Update displayed state before saving or evaluating a contract at its timestamp. No factories tick in the editor; the editor may read campaign unlocks only.
+
+Use event-based integration with shared intervals. Interval boundaries include construction/upgrade completion, launch windows, burn events, refuel/handling completion, vehicle ready times, shipment arrivals, slot ready times, service completion, wear zero, fault windows, solar samples, route scheduling boundaries, batch exhaustion, deposit threshold, storage full/empty, and power full/empty. Inputs changing during a gap must affect the remaining gap. A cargo arrival at t=100 can feed a shop between t=100 and targetUT; it cannot arrive only after all production has finished.
+
+At equal timestamps use this order: integrate the previous open interval; commit completions and arrivals; apply maintenance/fault transitions; apply player commands at that timestamp; evaluate route departures; evaluate campaign completion/rewards. Sort independent equal-time entities by stable ID. Do not run each converter through the full catch-up gap sequentially. Inventory/power sharing is integrated over the same interval, with simultaneous rates and resource limits; deterministic priorities resolve competition. RecipeMath remains the shared limiter, but a single converter Step is not a substitute for colony/world scheduling.
+
+Tests must prove partition invariance for shared power, drill-to-smelter-to-shop chains, a full output later drained by another building, mid-gap shipments, fuel burn/refuel events, window opening, depot handoffs, faults, maintenance, and routes. Compare Advance(T) against arbitrary partitions to T. Commands/environment snapshots occur at the same absolute timestamps in both tests. Allow absolute 1e-7 units plus relative 1e-9 for long runs. Determinism means these defined rules, not exact real KSP physics.
+
+Catch-up complexity is O(events and fixed environment samples), not O(elapsed seconds). No claim of O(1) when processing fault/solar/route boundaries. Skip idle spans analytically. Set a per-frame processing budget (default 4 ms), persist a targetUT cursor, show Catching up, and continue on later frames. Never discard unprocessed elapsed time or advance lastSimUT past it. Disable mutating UI commands for entities not yet caught up. Save intermediate state with its actual simulation cursor; resume after reload. Do not evaluate completion/rewards against stale world time.
+
+Use UT, not DateTime or Unity delta time, for all gameplay totals. If UT rolls back, restore the loaded save's state and cursor; do not retain newer singleton state. Corrupt negative clock gaps reset the affected cursor with diagnostic. Excessive future gaps are processed incrementally rather than pretending skipped time was simulated. Settings may cap accepted corrupt targets, but the warning and unapplied interval must remain explicit.
+
+## 13 User interface and feedback
+
+### 13.1 Hab PAW
+
+Deploy/Undeploy, colony name/id, Open Lodeworks, operating state, crew factor, battery/current generation/draw, active deposit grade and remaining, aggregate production, usable mixture/fuel reserve, fault/maintenance warning. Depot PAW: Register/Unregister, orbit validity, cargo/fuel/berths, Open Lodeworks, and manual stock-fuel bridge controls. Do not create a PAW on a cosmetic prop. Show editor tooltip capabilities and blueprint requirement without accessing flight-only singletons.
+
+### 13.2 Application window
+
+Use a resizable draggable IMGUI window with GUILayout and stock skin fallback. Support stock UI scaling. Tabs:
+
+1. Campaign: accepted/available quests, progress, origins/grade filters, rewards, blueprint requirements, acceptance/cancellation guidance.
+2. Colonies: body/name, status, rates, storage, power, deposit, crew, warnings. Selected colony opens building grid and controls.
+3. Inventory: batch bands and origin; exact quantities, reserved space, incoming cargo, dumped slag, processing selection.
+4. Buildings: Included kit/Build more/Upgrade catalog; placement ghost/grid, Move/Dismantle, Metal/Parts cost, construction queue/progress, blueprint lock reason, condition, service status, priority and recipe mode.
+5. Routes: itinerary editor, service/vehicle selection, source cargo/fuel reserves, destination thresholds, campaign quota, cost comparison, priority, enabled state and actual blocked reason.
+6. Shipments: end-to-end consignment and leg views, contents/origin, burn/refuel plan, fuel on board/remaining, windows/ETAs, actual state, reservation, vehicle location/return time and queued requests.
+7. Prospecting: current site and discovered deposit comparison; estimated data clearly labeled.
+8. Depots: actual orbit, storage/reservations, usable mixture, berths, module upgrades, vehicle hangar, refuel queues and stock transfer.
+9. Fleet: vehicle template/role, dry mass, payload/tank limits, actual location, onboard fuel, service/queue state, cycle assignment and commissioning/retirement.
+10. Settings: difficulty and diagnostic options; state whether changes are per-save or installation-wide.
+
+Display starter pieces remaining, the exact material costs for extra buildings/upgrades, per-resource capacity sources, achieved units/min, planned nominal rate, time to fill/exhaust where estimable, battery trend, destination capacity, available/returning vehicles and depot berths. Forecasts are estimates using current conditions, not exact guarantees; show Unknown if stalled or environment unsupported. Alerts on depleted ore/feed reservoirs, no power, fuel shortage/imbalance, depot invalid orbit, no safe return plan, blocked delivery, maintenance shortage, lost shipment, and blueprint reward. Alerts deduplicate by transition and can be acknowledged; no per-frame spam. Auto-route cargo to KSC without an accepted quota must require an explicit continuous-export choice.
+
+Toolbar button in flight, space center, and tracking station. Missing icon must not crash; hab PAW still opens the window. Scope selection and scroll positions survive scene changes. No free-typed GUIDs. Use localized labels for all player-facing text.
+
+### 13.3 Network diagnostics and forecasts
+
+Produce structured BlockedReason records from simulator decisions, with code, entityId, limiting quantity, related owner/job/endpoint IDs, sinceUT and optional nextKnownEventUT. UI/localization formats these records; never parse English logs to discover a bottleneck. NetworkDiagnostics follows related records across a consignment/service chain with bounded traversal and visited IDs. Example: KSC delivery delayed -> tug needs reserved propellant -> depot tanker unavailable -> source refinery power-limited. If multiple causes exist, show primary cause plus other constraints; no fabricated single explanation.
+
+Show actual and potential units/min, vehicle utilization (handling, flight, window/fuel/queue/idle time), delivered tonnes per Kerbin day, queue wait and forecast time to empty/full/depletion/service threshold. Persist bounded rolling counters/window accumulators for these metrics, not unbounded per-frame history. Actual rates come from committed deltas; potential rates state crew, power and grade assumptions. Ignore debug grants in economic throughput.
+
+Implement forecasts after accounting/scheduling is accepted. Use a bounded, read-only clone/snapshot of the pure simulation or documented analytical estimates; never mutate the live ledger, charge stock funds, claim contracts or call Unity APIs. Mark uncertain future crew/orbit/manual changes. Return Unknown with a reason if safety/profile assumptions are unsupported. Cache by relevant state revision and absolute forecast interval; do not run a full world forecast in every IMGUI draw. Profiling must include diagnostic and forecast overhead.
+
+Add a Network Overview within Routes: selected consignment explanation, bottleneck endpoint, recent achieved throughput vs quoted sustainable throughput, and links that select the responsible building/job/vehicle. Alerts are deduplicated state transitions, including potential deadlock. No automatic construction or spending is triggered by diagnostics.
+
+## 14 Visuals
+
+Deck/buildings exist only while the anchor is loaded and unpacked. Trucks run between active drill/storage/processing slots; max four. Drone/rocket departure models appear only within 2000 m of active vessel when the source is unpacked. Use unscaled real time for cosmetic motion; pause animations when the game is paused. Gameplay shipments still use UT. Missing models use primitives.
+
+Drone: start at terminal, visibly take off, climb, disappear within 30 real seconds or 2000 m. Rocket: rise along local radial and disappear within 25 real seconds or 5000 m. Arrival visuals may play after ledger credit when the destination is watched. A destroyed/skipped model changes no cargo. Parent to the anchor; handle floating origin by local poses. No wheel colliders, physics transport vehicles, automatic Vessel spawning or active vessel switching. Real player-built depot vessels keep their normal stock map icons; abstract haulers do not get stock vessel icons.
+
+Place building models on the deck without intersection; ensure trucks do not pass through the hab. Art quality is not a simulation acceptance criterion. Do not copy Squad mesh files; reference installed paths. All subscriptions and objects are released on pack/unload/destruction/scene exit.
+
+## 15 Persistence and migration
+
+Write scenario schema 6. Required sections: COLONIES, DEPOTS, BUILDINGS, STARTER_KITS, CONSTRUCTION_JOBS, RESOURCE_STORAGE, BATCHES, VEINS, FUEL_RESERVOIRS, HULL_ORDERS, FUEL_INVENTORY, ROUTES, TRANSPORT_VEHICLES, TRANSPORT_SLOTS, CONSIGNMENTS, FLIGHT_LEGS, SHIPMENTS, CAMPAIGN, BLUEPRINTS, REWARD_RECEIPTS, DELIVERY_CLAIMS, COMMAND_RECEIPTS, SETTINGS, SIMULATION_CURSOR, RESERVATIONS, DISPATCH_POLICIES, BERTH_BOOKINGS, PARKING_ENTITLEMENTS, METRIC_WINDOWS. Persist source provenance, reservations, partial arrivals, vehicle turnaround jobs, maintenance reservations, objective counters, environment sample interval, and last fault window. Also persist vehicle location and onboard propellant, maneuver cursor, refuel/berth reservations, commissioning jobs, orbit elements/epoch/validity, template snapshot, protected fuel, consignment eligibility/handoff history and physical depot mass cache. Also persist kit receipts tied to anchor identity, remaining/packed tokens with machine state, storage resource/tier, material-paid basis, escrow balances, completed module structure mass and build/upgrade queue timestamps.
+
+Use Guid D strings for GUID references; internal stable IDs are canonical strings. Invariant round-trip double formatting. Parse finite values only. Missing optional fields use documented defaults. Duplicate IDs or conflicting claims quarantine the affected record with a visible diagnostic; never silently duplicate inventory. Save/load is atomic from the simulator's perspective; do not serialize half of a departure transaction.
+
+Migration: schema 1 legacy routes/manifests are not compatible inventory; preserve the original nodes in LEGACY_BACKUP and disable them with a warning. Schema 2 colonies retain goods, provenance, ground depletion, converter condition and location. Create owned starter power and battery using variant defaults; do not steal spacecraft EC. Old shipments retain saved departure/arrival times and cargo; create reservations where capacity permits, else visible waitingForSpace state. Old seed/debug ore is campaign-ineligible. Do not invent campaign completion or infer blueprints from inventory. Building funds-paid defaults to zero for old saves, preventing unearned refunds. Document these deliberate rules.
+
+Schema 3 migration preserves old in-flight shipments as legacy funded flights that arrive once on their old timers; they do not become free fuel or reusable located vehicles. Preserve old return-slot availability until its pending flight closes, then disable old service rules until the player commissions fuel-aware vehicles. Do not retroactively charge fuel for already paid flights. Give existing colonies the new empty fuel/feed capacities and unlocked baseline pump/refinery, never a free propellant grant. Campaign completions/blueprints remain, while new depot quests are offered according to their prerequisites. Legacy cargo keeps original dispatch eligibility and may complete a previously accepted quest only under its preserved acceptance rule.
+
+Schema 4 migration preserves existing stored amounts and old paid capacity as explicit legacy capacity grants per resource, rather than shrinking a full store below its content. Replace new-building catalog options with the resource-specific recipes; do not multiply legacy caps. Existing buildings retain condition/fault and funds-paid history, but their old funds-only purchase never becomes refundable Metal/Parts. Existing kits did not exist: give each surviving hab only starter pieces not already represented by its existing matching machinery/storage, record the reconciliation receipt, and never grant another set on reload. Existing integral hab fuel buffers keep their legacy amount/cap until emptied; later expansion must use dedicated storage. New habs use the small integrated capacities. Preserve campaign completion IDs and remap old silo/fuel tank blueprint rewards to advanced dedicated storage/fuel upgrade as appropriate. No old save loses inventory just because capacity rules changed.
+
+Schema 5 migration retains quantities, provenance, live jobs, fuel plans, inventories, starter receipts and capacities. Consolidate existing job/shipment claims into ReservationBook without reserving escrow/onboard matter a second time; conflicting claims quarantine affected jobs and expose recovery. Add default dispatch policy/timestamps without replaying departures. Existing located depot vehicles need deterministic parking/berth reconciliation; preserve excess occupants in visible legacy-overcapacity state, block new occupancy until resolved, and never delete vehicles or cargo. Existing active handling finishes under its retained booking. Create no battery, fuel or blueprint grant. Existing c03 battery rewards map to advanced-battery-bank. Preserve stored condition but use the new configured default wear for future operation unless the save has an explicit custom wear rate; never retroactively repair equipment. Initialize bounded metrics from migration UT without inventing historical utilization. Persist reconciliation receipt so repeat load cannot duplicate claims.
+
+For a future unknown schema, preserve its complete raw node and open Lodeworks read-only with an incompatibility warning; do not save a reduced subset over it. Quickload must replace all caches, claimed IDs, and queued events with the loaded snapshot. Recovery/destruction only deletes the colony after verifying the anchor is genuinely gone; vessel GUID changes are not destruction.
+
+Receipt logs may compact only when no active contract/shipments can reference them. Preserve aggregate completed campaign/reward flags permanently. Never truncate deduplication records that still guard a live transaction.
+
+## 16 Technical standards and diagnostics
+
+- Pure simulation references neither Unity nor KSP; no I/O, mutable statics, DateTime, random APIs, or logging framework.
+- KSP callbacks are main-thread only. No async/worker-thread access to game objects.
+- Resource simulation never runs in PartModule.FixedUpdate/OnFixedUpdate. One scenario driver advances world UT.
+- [KSPField(isPersistant = true)] is spelled as the game requires. Verify callback signatures rather than guessing.
+- Named event handlers; every subscription has removal. No writes to part prefabs, global resource definitions, or other mods' state. Explicit stock-fuel bridge writes use the verified broker only; fuel in stock tanks must never also be in the ledger.
+- Boundary exceptions log [Lodeworks], suspend affected subsystem for the scene, preserve save data, and show the player an actionable diagnostic. Do not silently persist every building disabled after an adapter error.
+- Transition logs: deploy, command failure, departure, arrival, lost cargo, fault, maintenance start/end, campaign completion, reward grant, migration and catch-up warning. Avoid inventory spam inside ticks.
+- Optional diagnostic export: UT, colonyId, buildingId, reason, input/output deltas, power balance, shipmentId, routeId, contractId. Include a compact event ring buffer for debugging; export only on explicit request/debug option.
+- Avoid LINQ and avoidable allocations in the hot simulation driver. Pool buffers where useful; do not make impossible zero-allocation promises while allocating result dictionaries every tick.
+- Test pure logic automatically. Add adapter integration checks for state ownership, scene changes, contract registration, unlock enforcement, and funds transactions. Manual KSP verification remains required.
+- Gitignore bin/obj, local paths, game DLLs and PDBs. Ship MIT license for original code/configs. No bundled MiniAVC, Harmony, Module Manager, or runtime NuGet dependency.
+
+Settings are per-save for gameplay: RateMultiplier=1, WearMultiplier=1, FaultsEnabled=True, AutoMaintenance=True, HardMaintenance=False, CatchupEnabled=True, SandboxCampaign=False. Visual toggles/debug export are installation preferences. With CatchupEnabled=False, intentionally advance inactive cursors without production and show background simulation disabled; this is an explicit difficulty deviation from partition invariance. It must not duplicate pending arrivals or campaign rewards.
+
+Target performance: 20 colonies, 200 buildings, 100 routes, and 100 shipments remain responsive on a stock-capable PC. Profile steady state separately from catch-up. Respect the 4 ms catch-up budget, show backlog, and prioritize correctness over hiding delayed simulation. Do not assert performance solely from absence of logs.
+
+## 17 Config and validation contract
+
+All material construction recipes, kit entitlements, resource-specific capacities, rate upgrades, payloads, times, power, campaign quantities, and profiles are configurable data. Initial baseline material recipes are below. These replace the old building-placement funds table. Extra buildings do not have a second mandatory funds placement fee. Ordinary part purchase, actual transport fees, vehicle hull orders, fuel purchase and emergency repairs retain their funds rules.
+
+| Extra building or depot module | Metal | Machine Parts | Blueprint |
+|---|---:|---:|---|
+| Basic ore drill | 100 | 0 | baseline |
+| Extra basic smelter | 150 | 0 | baseline |
+| Basic fuel-feed pump | 80 | 0 | baseline |
+| Basic refinery | 150 | 0 | baseline |
+| Basic transport terminal | 120 | 0 | baseline placement; service tier follows campaign |
+| Ore bin / Metal bin | 60 | 0 | baseline |
+| Slag bin / Fuel-feed bin | 50 | 0 | baseline |
+| Parts bin / Supplies bin | 40 | 0 | baseline |
+| LiquidFuel tank / Oxidizer tank | 80 | 0 | baseline |
+| First or extra shop | 120 | 0 | c04 |
+| Basic battery bank (+2000 capacity) | 60 | 0 | baseline |
+| Advanced battery bank (+8000 capacity) | 100 | 10 | c03 |
+| Solar array | 100 | 20 | c04 |
+| Advanced continuous generator | 250 | 60 | c07 |
+| Depot single-resource cargo extension | 120 | 20 | depot core unlocked |
+| Depot LF tank / Oxidizer tank extension | 150 | 25 | depot core unlocked |
+| Depot berth/hangar extension | 200 | 40 | matching fleet-capacity blueprint |
+| Depot handling upgrade | 120 | 30 | d01 |
+
+Depot extensions requiring Parts are expansion choices; the launched core's initial storage/berths suffice for d01/d02 before the shop unlock. A fuel-tank upgrade blueprint unlocked at d01 becomes usable once Parts are produced, not a prerequisite for d01's delivery. Basic storage is enough to hold 1 t fuel cargo and its local propellant budget. A prospective build must check capacity for its costs; do not require a storage upgrade whose material cost itself exceeds every preceding capacity.
+
+Upgrade recipes are incremental, never charge the full building again and then also charge an upgrade. Starter pieces can upgrade once the blueprint and local material recipe are satisfied:
+
+| Upgrade | Metal | Parts | Resulting rate or capacity |
+|---|---:|---:|---|
+| Drill Tier 0 -> 1 | 100 | 0 | extraction and operating draw x1.5 baseline; c03 |
+| Drill Tier 1 -> 2 | 200 | 40 | extraction/draw x2 baseline, not x2 current; c10 |
+| Pump/refinery/smelter/shop Tier 0 -> 1 | 100 | 20 | nominal processing/extraction and draw x1.5 baseline; c05 |
+| Pump/refinery/smelter/shop Tier 1 -> 2 | 200 | 50 | nominal rates/draw x2 baseline; c07 |
+| Dedicated storage basic -> advanced | 100 | 20 | fourfold that resource's capacity; c05 for cargo/feed/products, d01 for LF/Oxidizer |
+| Generator output 20 -> 40 power/s | 150 | 30 | doubles owned generation; c07 |
+| Terminal handling 1 -> 4 t/min | 120 | 30 | improves cargo handling only; d01 |
+
+Faster processing has proportionally higher instantaneous power demand and unchanged per-unit chemistry/energy at these tiers. Transport hull upgrades must commission/replace the actual template and obey its existing costs and fuel math; a terminal upgrade does not magically improve a ship's Isp or tank mass. Higher tiers never restore condition, refill storage, replenish a deposit or duplicate a starter kit. Advanced generator, battery and solar output/capacity remain their explicit section values. Use baseline reference stats for every multiplier to avoid compounded accidental boosts.
+
+
+Validation runs before gameplay: campaign prerequisite graph acyclic; every reward/objective references a defined ID; baseline kit reaches c01 without imported construction materials; c02 reachable near KSC and at distant supported sites through baseline bank expansion within deck limits; first Metal/bin/shop construction has no Parts dependency cycle; capacity can hold each next-tier material recipe; every required transport unlock precedes objectives that require it; rates/costs finite and nonnegative; LF/OX densities/mixture valid; endpoint orbit/role supports each transport; no free propellant in building/vehicle commissioning; time/payload positive; recipe duplicate rates aggregated; body profile fallbacks defined; localization keys present. Invalid optional definitions are disabled with a diagnostic; invalid baseline/campaign definitions block that subsystem rather than silently accepting impossible quests.
+
+Example campaign config shape:
+
+```text
+LODEWORKS_QUEST
+{
+    id = c03
+    prerequisite = c02
+    titleKey = #LOC_Lodeworks_Campaign_Mun_Title
+    mainQuest = True
+    deadlineSeconds = 0
+    OBJECTIVE
+    {
+        id = munOreReturn
+        kind = deliver
+        endpoint = ksc-receiver
+        cargoKind = batch
+        originBody = Mun
+        gradeBand = any
+        amount = 100
+        eligibility = minedAnyTime
+        departureAfterAccept = True
+    }
+    REWARD
+    {
+        blueprint = drill-tier-1
+        blueprint = battery-bank
+        funds = 20000
+        reputation = 5
+    }
+}
+```
+
+For minedAfterAccept, batches carry mining event sequence/UT eligibility sublots; stack only with compatible acceptance eligibility or preserve sublots. Do not use a single bool to claim old mined stock was produced after acceptance. Main ore quests may use minedAnyTime with departureAfterAccept=True instead; shipped default is minedAnyTime for c02 onward, so existing legitimately mined ore is useful, but shipments already dispatched before acceptance cannot count. The c03 example uses that default. Unit-test both policies; document the default visibly in contract text.
+
+## 18 Implementation phases
+
+One phase per coding session. Do not use old phase numbering. Every phase requires its listed automated checks, an implementation summary, and honest PHASE_STATUS.md. Maintain DECISIONS.md and a checklist of remaining manual checks. Later phases may extend APIs but must preserve earlier accepted behavior unless this document explicitly changes it.
+
+| Phase | Build scope | Acceptance gate |
+|---|---|---|
+| 0 | Solution, projects, MIT license, configs, runtime compatibility | Sim tests without game; plugin builds; both DLLs packaged |
+| 1 | API feasibility: contracts, part locks, funds, stock fuel bridge, depot identity/orbit and mass modifier | Record signatures; prove save isolation, actual locks/launch validation, conserved bridge mass and depot mass update; block unsupported essential behavior |
+| 2 | Inventory/provenance, recipe aggregation, kit receipts, dedicated storage, material transactions | Nonnegative/finite math, duplicate legs, dump, mixture density, idempotent commands |
+| 3 | World event scheduler, shared inventory and power | Partition invariance, chains, live power, chronological arrivals, budgeted catch-up |
+| 4 | Persistence, hab deployment and scene driver | Quickload, recovery, vessel remap, no editor simulation, schemas 1-6 migration fixtures |
+| 5 | Survey, shared deposits, independent extraction/smelting | Declining/residual extraction, shared cells, processing stored ore, origin/band eligibility |
+| 6 | Owned background power and solar adapter | Loaded/unloaded equivalence, day/night/occultation, no stock EC consumption |
+| 7 | Fuel feed, pump, refinery, tanks and reserves | Mass-conserving recipes, no free fill, component bottleneck, ore quota reserve, depleted reservoir |
+| 8 | FuelMath, maneuver budgets, vehicle templates, windows and route quoting | Independent rocket-equation vectors, nested parents, payload/return fuel, range/TWR, altitude/plane cost, explicit experimental profiles |
+| 9 | Crew, wear, faults and maintenance | Mid-gap ruin, every fault reachable, reserved Supplies, Engineer changes, default/hard service |
+| 10 | Deck, starter placement, material jobs, move/upgrade/dismantle | Terrain validation, one kit per hab, local expansion chain, salvage once, resource-specific caps and reservations, upgrade rate/draw |
+| 11 | Real orbital depot core/module/identity/mass/stock bridge | Player-launched safe orbit, no free fuel, orbit change suspension/replan, docking remap, mass conservation |
+| 12 | Located vehicles, commissioning, manual fuel-aware flights | Empty surface-commissioned vehicle, orbital hull delivery, actual location, protected reserves, burn once, fuel/tank/berth checks, true return legs |
+| 13 | Multi-leg consignments, handoffs and refueling | End-to-end provenance, fuel cargo mass, destination reserves, partial arrival, loss/recovery rules |
+| 14 | Automated routes, tanker supplies, campaign quotas and economics | No duplicate inbound, no operational-fuel deadlock, complete return/tanker costs, honest direct-vs-depot comparison |
+| 15 | Campaign evaluator and career contract adapter | Acceptance/first dispatch, final-endpoint claims, idempotent rewards, waypoints tracked, depot bootstrap |
+| 16 | Parts/blueprints and complete campaign graph | All templates/depot parts/unlocks exist; no progression cycle; no Eve export offer without staged-template validation |
+| 17 | Dashboard, itinerary/fleet/depot controls, alerts, localization | Every kit/build/upgrade/storage lifecycle command accessible; meaningful blocked causes/quotes; UI scale, scene cleanup |
+| 18 | Trucks and cosmetic departures/arrivals/berth models | Fallback models, pause/warp/origin, no state authority in animations, cleanup |
+| 19 | Commercial orders, difficulty and prospecting comparison | Feasible deadlines/quotes, mode rules, fuel sales not repeatable cargo exploits |
+| 20 | Long-run tests, station/flight migration, profiling and game calibration | Complete simulated campaign, arbitrary partitions, reproducible maneuver assumptions, one useful depot chain and one cheaper direct route, no skipped time |
+| 21 | Balance, README, localization audit, clean package | Full manual gate, both assemblies, no game DLLs/assets/forbidden dependencies, documented estimation limits |
+
+### 18.1 Required intervening phases and execution order
+
+Execute: 0, 1, 2, **2A**, 3, **3A**, 4, 5, 6, **6A**, 7, 8, 9, 10, **10A**, 11, 12, **12A**, 13, 14, **14A**, 15, 16, 17, **17A**, 18, 19, 20, **20A**, 21. Uppercase letter IDs are complete separate coding sessions. Every session depends on all earlier entries in this sequence; later feature hooks may be interfaces only until their owning phase. Existing accepted implementations require a gap assessment against v5, not automatic deletion or restarting. Update PHASE_STATUS.md with each exact ID and remaining checks.
+
+| Phase | Normative sections and build scope | Required acceptance |
+|---|---|---|
+| 2A | 4.3-4.4; pure ReservationBook, floors/eligibility, escrow ownership, atomic query/reserve/commit/release; integrate available phase-2 transactions | Overlap/conservation, 60-of-100 vs 80 export, no double escrow debit, idempotence, conflict detection |
+| 3A | 4.4, 12; chronological competing consumers, dependency reasons, structured event hooks | Priority/age ties, existing claims protected, quota floors, arbitrary partitions; placeholder callers cannot bypass authority |
+| 6A | 7.1.1; basic-bank config/capacity and pure early electric quote, empty added capacity, deployment-preview data model | 144 km independent fixture, distant-site expansion quote, no Parts gate or free charge; visuals/placement arrive in phases 10/17 |
+| 10A | 3.6, 7.1.1, 8.1; complete Metal-only bank construction, fixed-deck expansion, early production/repair pacing fixtures | Local Metal -> bank -> charged feasible c02 service; cell accounting; Engineer warnings; near-KSC c02 before mandatory service |
+| 12A | 9.5.1; berth/parking/loader scheduler, return entitlements, WaitGraph and structured occupancy reasons | Two parked tugs, safe tanker arrival, return space, booking delays, cyclic waits vs timed waits, persisted queues/mass |
+| 14A | 10.3; batching, timer, hysteresis, pending caps, fair contention; integrate all routes and reservations | Partial/final-quota dispatch, no oscillation/starvation within priority, upstream backpressure, recovery/reload/partition invariance |
+| 17A | 13.3; network overview, causes, bounded metrics and read-only forecasts; extend save/UI/localization | Multi-endpoint cause chain, real deltas/utilization, Unknown reasons, no side effects, cache invalidation and cost profiling |
+| 20A | 19.3; deterministic playable-network scenario, shortage/full-buffer recovery, early-campaign intervention report | Complete scenario under uninterrupted/partitioned/save-load runs; scoped recovery; manual evidence separated honestly |
+
+### 18.2 How to implement each session
+
+1. Read the normative sections and accepted predecessor interfaces. Produce a scope/dependency checklist before editing; no unsupported API guesswork.
+2. Define smallest pure data contracts and invariants first. Stable IDs, UT timestamps, immutable quote inputs and structured failures precede UI.
+3. Write independent example fixtures for the phase's meaningful invariants, then implement the pure behavior. Avoid tests that only restate an implementation loop.
+4. Connect each current caller through the authoritative service; search for bypasses/direct inventory mutation. Future callers remain documented interfaces, not speculative features.
+5. Add versioned persistence for new fields and migration fixtures when records become live. A phase cannot claim completion with reload losing its commitments/timers.
+6. Add adapter/UI wiring only in that phase's scope; earlier pure phases expose testable preview/diagnostic results for later UI. Use actual verified APIs and report unavailable game checks.
+7. Run the phase checks and affected predecessor regression checks. List commands/results, unresolved game checks and next interfaces in PHASE_STATUS.md; record balance/API decisions in DECISIONS.md.
+8. Stop at the named phase. Split an oversized phase into documented substeps within that same session scope; do not skip its acceptance gate or advance to another phase without a new user instruction.
+
+For revisions to existing code, inventory existing behavior first and preserve accepted systems. Replace duplicate reservation/queue authority through explicit caller migration; remove obsolete paths only after equivalence/conservation tests pass. No rewrite merely to match proposed class names. A full UI, full transport network or full forecast implementation is not a dependency of initial inventory math.
+
+Session instruction: "Implement Phase N only, using the build scope above and the normative sections it references. List the tests and game checks you completed, then stop."
+
+## 19 Required test matrix and release gate
+
+### 19.1 Automated tests
+
+1. Recipe shortage/output full/dump/duplicate leg/zero efficiency and nonfinite validation.
+2. Hash golden values computed independently from the specified algorithm; all fault types reachable with separate type hash.
+3. Ore mass balance, origin profile preservation, grade-band stacking, debug cargo ineligibility, and production/mining eligibility sublots.
+4. Shared vein extraction from multiple colonies; analytic decline; residual depletion; power/storage-limited residual.
+5. Continuous and sampled solar power; empty battery/live supply; construction material reservation and powered jobs; no negative or excess battery; scarce power priorities.
+6. World partition invariance with arbitrary ticks and event ties, including shared inventory and shipment inputs mid-gap.
+7. Maintenance reservations, mid-gap ruin, fault persistence, cancellation, Engineer loss and emergency service cost.
+8. Mass-limited shipment, source reserve, destination reservation, slot round trip, overflow, source loss, destination loss and idempotent costs.
+9. Campaign quotas and commercial assignment, mixed eligible/ineligible cargo, preaccept departures, no circular delivery credit, persisted partial objectives.
+10. Campaign prerequisite graph and a simulated baseline-to-completion run without material construction imports.
+11. Migration schemas 1/2, future schema read-only, repeated save/load, malformed values, duplicate IDs and rollback.
+12. Budgeted catch-up against uninterrupted reference; saving mid-backlog preserves cursor and exact once arrival/reward.
+
+### 19.2 Manual KSP gate
+
+Run in clean KSP 1.12.5 with Squad and Lodeworks. Then smoke-test supported version bounds if available; state which versions actually ran.
+
+- New career: starter hab access works without a campaign dependency cycle.
+- Deploy on valid Kerbin terrain; invalid slope/orbit/splash refuses without a ghost colony.
+- Place the included drill/ore bin/Metal bin with no transported Metal/Parts/Supplies. Produce local Metal, construct an extra dedicated bin, unlock/build the first shop without Parts, then manufacture Parts and pay for an advanced upgrade.
+- Drill runs independently; stored ore smelts after drilling stops.
+- Spacecraft EC remains separate; colony works while at KSC/tracking station and through warp.
+- Main contracts appear, accept, preserve progress, consume KSC deliveries, and award the specified permanent blueprint once.
+- Locked reward parts cannot be bought/launched via imported craft; reward/save switching/editor refresh are correct.
+- Supply route runs unattended; vehicles fly funded return legs; source/destination storage and quota reservations are visible.
+- Power shortage, full output, depletion and maintenance each show the actual reason.
+- Background service works; optional hard mode pauses as specified.
+- Dock/undock, move hab, recover/destroy source/destination, quicksave/quickload and scene changes preserve correct identity and cargo rules.
+- Solar solar-night/occultation approximation behaves as documented.
+- Cosmetic departures/trucks disappear on pack/unload, and their destruction cannot lose or duplicate goods.
+- Campaign and contracts do not falsely operate in unsupported game modes; alternative quest window behavior is explicit.
+- No raw localization keys, duplicate toolbar buttons, per-frame exceptions, stale editor locks, or cross-save blueprint leakage.
+- Twenty-colony performance scenario stays responsive and catch-up backlog is visible.
+- ZIP includes GameData/Lodeworks with both plugin assemblies, original configs, license, README and version metadata; no Squad assets/game DLLs.
+
+Additional starter/construction/storage gates:
+
+- One kit grant per actual hab across deployment, scene change, quickload and relocation. Starter dismantle/replace cannot duplicate tokens, materials, free repairs or upgrade refunds.
+- Starter drill/smelter makes Metal; first basic Metal bin and first shop can be built without imported material or pre-existing Parts. Parts then enable advanced upgrades.
+- Individual bins change only their assigned resource cap; ore bands share total ore space but preserve their sublots. LF and Oxidizer remain stock resources with independent capacities.
+- Construction reserves exact material quantities, powered timers run in background, interruption/cancellation respects space, and materials cannot simultaneously be exported.
+- Upgrades change the stated rate/power/storage at completion, use baseline multipliers, preserve wear and contain no free contents.
+- Dismantling storage with goods/reservations is blocked; material salvage fits capacity, happens once, and respects paid cost versus free/debug pieces.
+- Depot building escrow -> structure -> salvage preserves physical mass and never counts the same material twice.
+- Schema 4 legacy inventory/capacity is preserved; new saves/habs use smaller buffers and receive no duplicate kit.
+
+Additional fuel/depot automated gates:
+
+- 0 delta-v consumes zero fuel; increased payload increases fuel; backward multi-burn solution matches forward integration; g0 stays 9.80665 on every body.
+- For Isp=350 s, mAfter=2 t and delta-v=1000 m/s, expected burn propellant is approximately 0.6764590475371899 t; independently compute and freeze a independent implementation before test acceptance; use absolute tolerance 1e-12 t for this golden vector.
+- Splitting a continuous plan without unloading or refueling produces the same burn fuel within tolerance. With refueling, independently integrate every leg and tanker cost; no automatic discount is granted merely for having a waypoint; include all endpoint fuel loads, residual reserve and tanker burns.
+- Fuel cargo cannot be consumed as propulsion and still arrive in full. Explicitly loading cargo fuel into propulsion reduces the delivered manifest and quest/sale amount.
+- Mixed propellant shortage, full component tank, partial stock bridge, dose rounding, fuel reserve cancellations and duplicate burn replay.
+- Same-primary Hohmann and patched-conic parent hierarchy reference fixtures, plane/altitude change, valid entry profile and departure window determinism.
+- Multi-hop acceptance eligibility, intermediate handoff, final KSC claim once, vehicle physically at destination until a fueled return flight.
+- Empty depot bootstrap, local refinery replenishment, steady-state tanker costs, capsule replacement fee, depot cargo/vehicle mass cache, actual orbit changes and safe hold.
+
+Additional manual fuel/depot gates:
+
+- Produce LF/OX by both ore ISRU and pumped feed; verify stock-density mass balance and no free fuel on placement.
+- Launch a real depot core on a stock vessel and register a safe orbit; its stock tracking icon is the station, not a generated hauler.
+- Deliver fuel cargo to depot, then cargo from surface, hand it to an orbital tug, refuel locally, deliver via Kerbin depot/capsule to KSC and receive the correct campaign progress.
+- Compare direct versus depot quotes for the same payload/return policy; demonstrate a meaningful depot benefit and an unnecessary detour cost without hidden discounts.
+- Empty a depot's propellant and confirm outbound tug blocks; restore supply and it resumes. Returning shuttles consume return fuel and appear at the correct endpoint.
+- Dock a stock ship; transfer LF/OX both directions; verify exact stock/ledger quantities and connected-vessel mass conservation.
+- Move/change-plane/destroy a depot while flights exist; no teleport delivery, false claim, duplicated onboard fuel or erased unrelated cargo.
+- Save/quickload during loading, window waiting, burn coast, refuel, handoff and empty return; continuation happens once.
+
+The mod is done only when automated tests pass and this manual gate is checked by someone who ran the game. Feature-complete code awaiting KSP checks is not an accepted release.
+
+### 19.3 Required gameplay/network scenario
+
+Ship a deterministic pure-sim scenario fixture plus a manual KSP checklist. Begin with a new-career Kerbin colony near KSC, its actual finite starter kit and empty storage; produce Metal and build a basic battery bank locally, complete c01-c04 legitimately, and show c02 feasibility without Parts/advanced power. Use a fixed surveyed Minmus site/profile and eligible campaign acceptance times. No debug cargo or invented unlock satisfies objectives. Tests may supply deterministic adapter environment/funds/crew snapshots, but purchases, production, rewards and flight accounting remain real simulation transactions.
+
+Build a Minmus surface fuel/mining source, a player-launched registered Minmus depot, a registered Kerbin depot, surface shuttle service, separately located tug and supplied cargo capsules. Manufacture expansion materials locally; record real hull deliveries/replacements. Complete d01/d02 and c05, then establish a second off-world colony and complete c06 by automated Supplies delivery. Establish an unattended repeat cycle carrying ore to KSC and replenishing fuel/maintenance Supplies, with exact provenance and return costs. Where shop capacity requires switching Machine/Pack modes, perform and record that explicit player command; do not assume one shop runs both modes.
+
+Inject, through timestamped legitimate commands, (a) depleted available depot propellant and (b) full downstream cargo space. Under fuel shortage, outbound service pauses safely, tanker/source operational fuel remains protected, and diagnostics follow the real supply dependency. Under full space, upstream dispatch stops; already committed cargo/reservations remain bounded. Restore fuel through a feasible paid supply shipment and drain space through a valid shipment/use command. Enabled services must resume automatically without recreating routes or resetting receipts. No duplicated reward, cargo, propulsion or slot occupancy after save/load at each stalled state.
+
+Record initial/recurring funds, produced/consumed fuel, exported mass, service cycles, empty returns, actual achieved tonnes/day, queue/window waits, manual commands, mandatory scene visits, service interventions and downtime. Repeat under arbitrary Advance partitions and save/load checkpoints; compare authoritative balances/events within section 12 tolerances. The steady-state measurement includes enough cycles to expose fuel/capsule replenishment, not one subsidized trip with prefilled depots. Forecasts label horizons and assumptions; actual results are reported separately.
+
+Acceptance: no imported construction materials required for surface startup/expansion; no remote free fuel; final KSC claim only once; basic banks solve the early energy gate; parked fleet does not monopolize handling; backpressure and fuel recovery resume unattended; diagnostics identify actual causes; zero mandatory scene visits solely to wait for default repairs/loading. Manual game execution validates deployment, stock-funded purchases, depot vessel mass and UI; pure tests never mark those game checks passed. Record campaign timing/maintenance pacing and any balance amendment before release.
+
+## 20 Deferred extensions
+
+Keep these out of the current implementation: physical autonomous cargo craft, automatic flight of player-built freighters, high-fidelity Lambert/gravity-assist optimization, cryogenic boil-off, stock vessel manufacturing, Sun-orbit depot endpoints, terrain roads, life support, multiplayer, and large new resource trees. The endpoint/blueprint/config architecture must permit later extensions, but no speculative implementation is required now.
+
+The release succeeds when a player can establish a working colony without loose construction cargo, automate a supply network, start from its finite included equipment, expand with locally manufactured materials and resource-specific storage, produce and manage actual transport propellant, build and refuel orbital depots, move origin-qualified ore through useful supply chains to KSC through contracts, unlock real Lodeworks parts and capabilities, and leave the network working while flying normal KSP missions.
