@@ -15,7 +15,7 @@ Result: build succeeded with zero warnings/errors; 1 boundary test passed. `arti
 
 Remaining manual check: load the staged assemblies in KSP and inspect the game log for assembly load errors. No gameplay behavior or Phase 1 API feasibility check is claimed yet. Phase 1 should begin by compiling small probes against this installation and recording actual signatures and in-game observations before building features.
 
-## Phase 1 — blocked at the stock part-lock/launch gate
+## Phase 1 — API route identified, awaiting game check
 
 Scope: API feasibility for contracts, part rewards, funds, stock fuel bridge, depot identity/orbit, and mass modifier. Dependency: Phase 0. Normative sections: master document 4.3, 9.5-9.6, 11.1, 11.3, 15, 18, and 19.2. Interfaces supplied for later phases: pure per-save blueprint decision, partial fuel accounting, physical mass sum, and compiled KSP API probes. No Phase 2 inventory, shipment, campaign, or deployed depot behavior was implemented.
 
@@ -28,7 +28,9 @@ dotnet test .\Lodeworks.sln -c Release --no-build
 
 Build: succeeded, zero warnings/errors. Tests: 5 passed, 0 failed (Phase 0 boundary plus Phase 1 per-save gate, partial/reverse/zero fuel transfer, invalid result, and mass fixtures). Staging contains `Lodeworks.dll` and `Lodeworks.Sim.dll` only. Compile success proves the signatures listed in DECISIONS.md exist in this KSP installation; pure tests do not prove gameplay behavior.
 
-**Blocker:** Public metadata exposes editor part filters and stock purchase state, but no confirmed public interception that makes an unrewarded Lodeworks part unpurchasable in R&D and prevents an imported craft containing it from launching. The stock editor's `GetStockPreFlightCheck` is private; `PreFlightCheck.AddTest` alone does not attach a mandatory test to the stock launch path. The exact prerequisite is a demonstrated public-API enforcement route satisfying section 11.3, or an explicit design amendment. No Harmony workaround or cosmetic badge was substituted.
+The initial custom-preflight blocker is superseded by a stock experimental-part route found in the installed assembly. `Phase1BlueprintAdapter` compiles against public R&D APIs and uses an absent tech node plus per-save experimental grants. Both stock launch paths include `ExperimentalPartsAvailable`, whose failed test has no proceed option. `tools/Verify-Phase1BlueprintApi.ps1` checks these signatures and control-flow references. This is an API feasibility finding, not a claim that locked parts have been tested in KSP. The adapter still needs scenario reward records and runtime integration, and the Phase 1 acceptance gate has not passed.
+
+Follow-up automated checks on 2026-10-01: `tools/Verify-Phase1BlueprintApi.ps1 -KspRoot $env:KSP_ROOT` passed 11 public-API/control-flow assertions against the installed assembly; `dotnet build .\Lodeworks.sln -c Release` passed with zero warnings/errors; `dotnet test .\Lodeworks.sln -c Release --no-build` passed all 5 tests; staging still contains exactly the two Lodeworks DLLs. `KSP_ROOT` was set locally to the installed Steam KSP path for these commands.
 
 Remaining in-game checklist (none claimed complete):
 
@@ -39,5 +41,4 @@ Remaining in-game checklist (none claimed complete):
 - Register a core on a real vessel; observe dock/undock identity remap, orbit change, clearance, and packed/unloaded `IPartMassModifier` updates without duplicate or missing mass.
 - Smoke-test KSP 1.12.3 and 1.12.4 if those installations become available.
 
-Do not advance to Phase 2 until the blocking essential lock/launch behavior is resolved and the Phase 1 game evidence is recorded. The current probe is intentionally not wired into player controls.
-
+Do not advance to Phase 2 until the lock/launch behavior and other Phase 1 game evidence are recorded. The current adapter is intentionally not wired into player controls.
