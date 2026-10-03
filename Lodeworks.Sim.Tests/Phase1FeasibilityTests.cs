@@ -7,13 +7,14 @@ namespace Lodeworks.Sim.Tests
     public sealed class Phase1FeasibilityTests
     {
         [Fact]
-        public void BlueprintDecisionIsSaveSpecificAndRequiresStockTech()
+        public void BlueprintDecisionIsSaveSpecificAndSandboxBypassesCareerGates()
         {
             var saveA = new HashSet<string> { "lw-depot-core" };
             var saveB = new HashSet<string>();
             Assert.True(BlueprintGate.IsAvailable("lw-depot-core", true, false, saveA));
             Assert.False(BlueprintGate.IsAvailable("lw-depot-core", true, false, saveB));
-            Assert.False(BlueprintGate.IsAvailable("lw-depot-core", false, true, saveA));
+            Assert.False(BlueprintGate.IsAvailable("lw-depot-core", false, false, saveA));
+            Assert.True(BlueprintGate.IsAvailable("lw-depot-core", false, true, saveB));
             Assert.True(BlueprintGate.IsAvailable("lw-depot-core", true, true, saveB));
         }
 
@@ -53,3 +54,4 @@ namespace Lodeworks.Sim.Tests
         }
     }
 }
+
