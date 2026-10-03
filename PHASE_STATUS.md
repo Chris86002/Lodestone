@@ -42,3 +42,6 @@ Remaining in-game checklist (none claimed complete):
 - Smoke-test KSP 1.12.3 and 1.12.4 if those installations become available.
 
 Do not advance to Phase 2 until the lock/launch behavior and other Phase 1 game evidence are recorded. The current adapter is intentionally not wired into player controls.
+
+Follow-up on 2026-10-03: corrected the pure blueprint decision so sandbox bypasses both campaign rewards and career science prerequisites, as required by section 11.3. `dotnet test .\Lodeworks.sln -c Release` passed all 5 tests against the local KSP 1.12.5 build dependencies. This fixes a sandbox rule error but does not satisfy the Phase 1 acceptance gate: the adapter still has no reward-part configurations or per-save scenario caller, and none of the in-game checklist above has been observed.
+
