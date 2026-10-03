@@ -12,7 +12,7 @@ namespace Lodeworks.Sim
         {
             if (string.IsNullOrWhiteSpace(partName) || rewardedParts == null)
                 return false;
-            return stockTechResearched && (isSandbox || rewardedParts.Contains(partName));
+            return isSandbox || (stockTechResearched && rewardedParts.Contains(partName));
         }
     }
 
@@ -79,3 +79,4 @@ namespace Lodeworks.Sim
         }
     }
 }
+
