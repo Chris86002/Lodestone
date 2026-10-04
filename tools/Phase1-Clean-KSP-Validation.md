@@ -69,7 +69,22 @@ Invoked diagnostic `DockToVessel` again at `68.179 m`; KSP logged `Docking to ve
 
 Reopened the same saved, docked two-core vessel in orbital flight. An opt-in PAW action on part `1233492552` deliberately selected the *other* connected part `1426767126` as the `Part.RequestResource` target. `KSP-clean-remote-tank-clearance.log:3993-4000` records LF/OX `100/120 -> 50/60 -> 100/120` on the selected remote tank, while the invoking part's own tank stayed `10/12`. The invoking core's persisted ledger changed `0/0 -> 50/60 -> 0/0`; actual stock deltas were `-50/-60`, then `+50/+60`. Connected vessel mass stayed `2.3650000095367432 t` at every before/after observation. This proves direct selection of a different tank on a physically docked connected vessel. It does **not** establish KSP's automatic crossfeed selection or priority when the invoking part is passed as the request target.
 
+```text
+KSP-clean-remote-tank-clearance.log:3993  bridge selected=other tank part=1426767126
+:3995  actual stock delta LF=-50 OX=-60 ledger delta LF=50 OX=60
+:3996  bridge after other tank part=1233492552 ... stockMass+t=2.3650000095367432 ledgerLF=50 ledgerOX=60 ... tanks=1233492552:...[LiquidFuel=10/100,Oxidizer=12/120]; 1426767126:...[LiquidFuel=50/100,Oxidizer=60/120]
+:3999  actual stock delta LF=50 OX=60 ledger delta LF=-50 OX=-60
+:4000  bridge after other tank part=1233492552 ... stockMass+t=2.3650000095367432 ledgerLF=0 ledgerOX=0 ... tanks=1233492552:...[LiquidFuel=10/100,Oxidizer=12/120]; 1426767126:...[LiquidFuel=100/100,Oxidizer=120/120]
+```
+
 The opt-in clearance action read the live `Vessel.orbit` and Kerbin `pqsController.radiusMax`, atmosphere depth, and radius. It applied the Phase 1 proposed thresholds: bound orbit, eccentricity at most `0.05`, inclination at most `10°`, and periapsis at least `max(maxTerrain, atmosphere) + 10 km`. At near-circular 100 km, it logged `SAFE`, minimum Pe `80000 m`, atmosphere `70000 m`, maximum terrain `8735 m` (`:4001-4002`). KSP's Set Orbit safety check initially raised an attempted 75 km circular orbit to its minimum safe 86.75 km; that attempt was **not** a low-periapsis refusal test. A separate Set Orbit action produced 100 km, `15°` inclination; the action logged `REFUSE`, measured inclination `15.0000000008°` (`:4023-4026`). With KSP's explicitly labeled **Override safety check** enabled for this diagnostic fixture, Set Orbit then produced a near-circular `78,999.992 m` periapsis. The action logged `REFUSE` against `80,000 m` (`:4068-4069`). After restoring near-zero inclination and 100 km, it logged `SAFE` again (`:4085-4086`) and the safe vessel was quicksaved. This is an in-game diagnostic calculation on a real orbit; production depot registration belongs to Phase 11.
+
+```text
+KSP-clean-remote-tank-clearance.log:4002  diagnostic clearance=SAFE body=Kerbin peM=100000.05309973657 minimumPeM=80000 atmosphereM=70000 maxTerrainM=8735 ecc=3.3381904863333458E-07 incDeg=3.4834498445255216E-07
+:4024  diagnostic clearance=REFUSE body=Kerbin peM=99999.99978322268 minimumPeM=80000 atmosphereM=70000 maxTerrainM=8735 ecc=2.0011084436297175E-10 incDeg=15.000000000799918
+:4069  diagnostic clearance=REFUSE body=Kerbin peM=78999.992333667818 minimumPeM=80000 atmosphereM=70000 maxTerrainM=8735 ecc=7.3429406534513789E-09 incDeg=5.8151156400727464E-13
+:4086  diagnostic clearance=SAFE body=Kerbin peM=99999.999997836305 minimumPeM=80000 atmosphereM=70000 maxTerrainM=8735 ecc=2.1738290111794509E-11 incDeg=1.8714700678437272E-12
+```
 
 ## Open validation limits
 
