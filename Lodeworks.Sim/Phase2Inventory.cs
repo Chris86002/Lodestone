@@ -99,13 +99,15 @@ namespace Lodeworks.Sim
         {
             if (batch == null) throw new ArgumentNullException(nameof(batch));
             if (Amount(ResourceKind.Ore) + batch.Units > Capacity(ResourceKind.Ore) + Phase2Numbers.Epsilon) return false;
-            int index = ore.FindIndex(x => x.CanStackWith(batch));
+            // Preserve distinct batch IDs and creation sequences for future
+            // acceptance-time sublots. Compatible lots may be stacked explicitly.
+            int index = ore.FindIndex(x => x.BatchId == batch.BatchId);
             if (index >= 0)
             {
+                if (!ore[index].CanStackWith(batch)) return false;
                 if (batch.Units > 0) ore[index] = ore[index].Stack(batch);
                 return true;
             }
-            if (ore.Any(x => x.BatchId == batch.BatchId)) return false;
             ore.Add(batch);
             return true;
         }
