@@ -24,6 +24,12 @@ namespace Lodeworks.Phase1Harness
         [KSPEvent(guiActive = true, guiName = "Probe: ledger to stock (partial)")]
         public void LedgerToStock() => Transfer(-ledgerLiquidFuel, -ledgerOxidizer);
 
+        [KSPEvent(guiActive = true, guiName = "Probe: other tank to ledger")]
+        public void OtherTankToLedger() => TransferOnOtherTank(50, 60);
+
+        [KSPEvent(guiActive = true, guiName = "Probe: ledger to other tank")]
+        public void LedgerToOtherTank() => TransferOnOtherTank(-ledgerLiquidFuel, -ledgerOxidizer);
+
         [KSPEvent(guiActive = true, guiName = "Probe: prepare partial reverse fixture")]
         public void PreparePartialReverse()
         {
@@ -60,6 +66,34 @@ namespace Lodeworks.Phase1Harness
 
         [KSPEvent(guiActive = true, guiName = "Probe: log vessel, orbit, mass")]
         public void LogState() => Observe("manual");
+
+        [KSPEvent(guiActive = true, guiName = "Probe: check orbit clearance")]
+        public void CheckOrbitClearance()
+        {
+            Observe("clearance observation");
+            var orbit = vessel?.orbit;
+            var body = orbit?.referenceBody;
+            if (orbit == null || body == null || body.bodyName == "Sun" || body.pqsController == null ||
+                double.IsNaN(body.pqsController.radiusMax) ||
+                double.IsInfinity(body.pqsController.radiusMax) ||
+                body.pqsController.radiusMax < body.Radius)
+            {
+                Log("diagnostic clearance=REFUSE terrain/reference cannot be verified");
+                return;
+            }
+            double terrainHeight = body.pqsController.radiusMax - body.Radius;
+            double atmosphereHeight = body.atmosphere ? body.atmosphereDepth : 0;
+            double minimumPe = Math.Max(terrainHeight, atmosphereHeight) + 10000;
+            bool bound = orbit.eccentricity >= 0 && orbit.eccentricity < 1;
+            bool safe = bound && orbit.eccentricity <= 0.05 && orbit.inclination <= 10 &&
+                orbit.PeA >= minimumPe;
+            Log("diagnostic clearance=" + (safe ? "SAFE" : "REFUSE") +
+                " body=" + body.bodyName + " peM=" + F(orbit.PeA) +
+                " minimumPeM=" + F(minimumPe) +
+                " atmosphereM=" + F(atmosphereHeight) +
+                " maxTerrainM=" + F(terrainHeight) +
+                " ecc=" + F(orbit.eccentricity) + " incDeg=" + F(orbit.inclination));
+        }
 
         [KSPEvent(guiActive = true, guiName = "Probe: dock nearest test port")]
         public void DockNearestTestPort()
@@ -122,14 +156,29 @@ namespace Lodeworks.Phase1Harness
         }
 
         private void Transfer(double requestedLf, double requestedOx)
+            => TransferOnPart(part, requestedLf, requestedOx, "selected tank");
+
+        private void TransferOnOtherTank(double requestedLf, double requestedOx)
         {
-            if (vessel == null) return;
-            Observe("bridge before");
+            var other = vessel?.parts?.Where(p => p != part &&
+                    p.Resources.Get("LiquidFuel") != null &&
+                    p.Resources.Get("Oxidizer") != null)
+                .OrderBy(p => p.flightID).FirstOrDefault();
+            if (other == null) { Log("other tank unavailable on connected vessel"); return; }
+            TransferOnPart(other, requestedLf, requestedOx, "other tank");
+        }
+
+        private void TransferOnPart(Part selectedTank, double requestedLf,
+            double requestedOx, string selection)
+        {
+            if (vessel == null || selectedTank == null || selectedTank.vessel != vessel) return;
+            Log("bridge selected=" + selection + " part=" + selectedTank.flightID);
+            Observe("bridge before " + selection);
             try
             {
                 // Reverse requests cannot exceed the ledger's actual balance.
-                var lf = Phase1ApiSurface.RequestStockFuel(part, "LiquidFuel", requestedLf);
-                var ox = Phase1ApiSurface.RequestStockFuel(part, "Oxidizer", requestedOx);
+                var lf = Phase1ApiSurface.RequestStockFuel(selectedTank, "LiquidFuel", requestedLf);
+                var ox = Phase1ApiSurface.RequestStockFuel(selectedTank, "Oxidizer", requestedOx);
                 ledgerLiquidFuel += lf.LedgerDelta;
                 ledgerOxidizer += ox.LedgerDelta;
                 part.UpdateMass();
@@ -140,7 +189,7 @@ namespace Lodeworks.Phase1Harness
             {
                 Log("bridge FAILED " + error);
             }
-            Observe("bridge after");
+            Observe("bridge after " + selection);
         }
 
         private void Observe(string label)
