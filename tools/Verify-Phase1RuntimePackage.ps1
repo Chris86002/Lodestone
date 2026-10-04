@@ -31,6 +31,7 @@ $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Check-Package (Join-Path $root 'artifacts\GameData\Lodeworks') @(
     'Plugins/Lodeworks.dll', 'Plugins/Lodeworks.Sim.dll')
 Check-Package (Join-Path $root 'artifacts\Phase1Harness\GameData\Lodeworks') @(
-    'Parts/lwPhase1LockProbe.cfg', 'Plugins/Lodeworks.dll',
+    'Parts/lwPhase1LockProbe.cfg', 'Parts/lwPhase1FuelDepotProbe.cfg',
+    'Plugins/Lodeworks.dll',
     'Plugins/Lodeworks.Phase1Harness.dll', 'Plugins/Lodeworks.Sim.dll')
 
