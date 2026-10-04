@@ -17,3 +17,10 @@ Change the path for another PC. [KSPBuildTools](https://kspbuildtools.readthedoc
 The staged mod files are in `artifacts\GameData\Lodeworks\Plugins`: `Lodeworks.dll` and `Lodeworks.Sim.dll`. `artifacts` is build output and is ignored by Git. No KSP or Unity DLL is distributed. The compiled Phase 1 API probes are not wired to player commands and do not yet add playable features.
 
 See `PHASE_STATUS.md` for the checks completed and the remaining in-game validation.
+
+## Opt-in Phase 1 lock harness
+
+To test the blueprint lock in KSP, build `Lodeworks.Phase1Harness\Lodeworks.Phase1Harness.csproj` separately. Its diagnostic package is staged under `artifacts\Phase1Harness\GameData`, away from the normal two-DLL output. It includes a test-only probe part and a per-save grant/revoke panel. Follow `tools\Phase1-Lock-Harness-Checklist.md` for installation, expected observations, and an evidence record. The harness does not award campaign rewards and is not part of the normal mod package.
+
+The simulation project builds `netstandard2.0` for game-independent consumers and `net48` for KSP. The KSP package stages the `net48` assembly because KSP 1.12.5's game process does not resolve `netstandard.dll`. After building the normal and diagnostic packages, run `tools\Verify-Phase1RuntimePackage.ps1 -KspRoot $env:KSP_ROOT` to check their contents and runtime references.
+

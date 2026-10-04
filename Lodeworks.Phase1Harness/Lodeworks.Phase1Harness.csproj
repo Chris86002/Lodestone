@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Lodeworks.Phase1Harness</AssemblyName>
+    <Version>0.1.0</Version>
+    <KSPBT_ModRoot>$(MSBuildThisFileDirectory)..\artifacts\Phase1Harness\GameData\Lodeworks\</KSPBT_ModRoot>
+    <KSPBT_ModPluginFolder>Plugins</KSPBT_ModPluginFolder>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="KSPBuildTools" Version="1.0.0" PrivateAssets="all" />
+    <ProjectReference Include="..\Lodeworks.Ksp\Lodeworks.Ksp.csproj" />
+  </ItemGroup>
+  <Target Name="StagePhase1Harness" AfterTargets="Build">
+    <MakeDir Directories="$(KSPBT_ModRoot)$(KSPBT_ModPluginFolder)" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\Lodeworks.Ksp\bin\$(Configuration)\net48\Lodeworks.dll" DestinationFolder="$(KSPBT_ModRoot)$(KSPBT_ModPluginFolder)" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\Lodeworks.Sim\bin\$(Configuration)\net48\Lodeworks.Sim.dll" DestinationFolder="$(KSPBT_ModRoot)$(KSPBT_ModPluginFolder)" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)Parts\lwPhase1LockProbe.cfg" DestinationFolder="$(KSPBT_ModRoot)Parts" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)Parts\lwPhase1FuelDepotProbe.cfg" DestinationFolder="$(KSPBT_ModRoot)Parts" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)Parts\lwPhase1DockFuelProbe.cfg" DestinationFolder="$(KSPBT_ModRoot)Parts" />
+  </Target>
+</Project>
+
