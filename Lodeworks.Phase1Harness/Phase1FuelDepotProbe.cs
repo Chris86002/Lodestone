@@ -61,6 +61,39 @@ namespace Lodeworks.Phase1Harness
         [KSPEvent(guiActive = true, guiName = "Probe: log vessel, orbit, mass")]
         public void LogState() => Observe("manual");
 
+        [KSPEvent(guiActive = true, guiName = "Probe: dock nearest test port")]
+        public void DockNearestTestPort()
+        {
+            if (part == null || vessel == null) return;
+            var own = part.Modules.OfType<ModuleDockingNode>().FirstOrDefault();
+            if (own == null) { Log("dock unavailable: no local docking node"); return; }
+            var other = FlightGlobals.Vessels
+                .Where(v => v != vessel && v.loaded && v.parts != null)
+                .SelectMany(v => v.parts.SelectMany(p => p.Modules.OfType<ModuleDockingNode>()
+                    .Select(node => new { Vessel = v, Node = node })))
+                .OrderBy(x => (vessel.GetWorldPos3D() - x.Vessel.GetWorldPos3D()).magnitude)
+                .FirstOrDefault();
+            if (other == null) { Log("dock unavailable: no loaded remote docking node"); return; }
+            double distance = (vessel.GetWorldPos3D() - other.Vessel.GetWorldPos3D()).magnitude;
+            if (distance > 200) { Log("dock unavailable: nearest port distance=" + F(distance) + "m"); return; }
+            Observe("before diagnostic dock");
+            Log("diagnostic DockToVessel target=" + other.Vessel.id.ToString("D") +
+                " persistent=" + other.Vessel.persistentId + " distance=" + F(distance) + "m");
+            try { own.DockToVessel(other.Node); }
+            catch (Exception error) { Log("diagnostic DockToVessel FAILED " + error); }
+        }
+
+        [KSPEvent(guiActive = true, guiName = "Probe: undock test port")]
+        public void UndockTestPort()
+        {
+            if (part == null || vessel == null) return;
+            var own = part.Modules.OfType<ModuleDockingNode>().FirstOrDefault();
+            if (own == null) { Log("undock unavailable: no local docking node"); return; }
+            Observe("before diagnostic undock");
+            try { own.Undock(); }
+            catch (Exception error) { Log("diagnostic Undock FAILED " + error); }
+        }
+
         public float GetModuleMass(float defaultMass, ModifierStagingSituation situation) =>
             extraCargoMass + (float)(ledgerLiquidFuel * Density("LiquidFuel") +
                 ledgerOxidizer * Density("Oxidizer"));
