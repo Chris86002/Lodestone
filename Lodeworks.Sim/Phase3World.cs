@@ -206,7 +206,7 @@ namespace Lodeworks.Sim
         }
         public double CursorUT => cursorUT;
         public double TargetUT => targetUT;
-        public bool CatchingUp => cursorUT < targetUT;
+        public bool CatchingUp => cursorUT < targetUT || events.Values.Any(x => x.UT <= cursorUT);
         public MaterialBookSnapshot Materials => materials.Snapshot();
         public WorldPower GetPower(string endpointId) => power[Phase2Numbers.Id(endpointId, nameof(endpointId))];
         public double GetDumped(string converterId, ResourceKind kind) =>
