@@ -38,6 +38,11 @@ namespace Lodeworks.Sim.Tests
             Assert.Equal(0.50, merged.Grade, 12);
             Assert.Equal(40, merged.Units);
             Assert.Equal("b", merged.BatchId);
+            var inventory = new MaterialInventory("ore-site");
+            Assert.True(inventory.TryAddOre(normal));
+            Assert.True(inventory.TryAddOre(new OreBatch("f", "Mun", "Midlands", 0.60, 20,
+                ProvenanceClass.Mined, true, 5)));
+            Assert.Equal(2, inventory.Ore.Count); // do not erase later batch identity
             Assert.Throws<ArgumentException>(() => new OreBatch("debug", "Mun", "Midlands", 0.5, 1, ProvenanceClass.Debug, true, 1));
         }
 
