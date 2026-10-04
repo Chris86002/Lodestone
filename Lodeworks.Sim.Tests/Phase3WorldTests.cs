@@ -282,6 +282,20 @@ namespace Lodeworks.Sim.Tests
         }
 
         [Fact]
+        public void EventAtTargetStillCountsAsUnfinishedCatchupUntilCommitted()
+        {
+            var world = World();
+            world.Schedule(new WorldEvent("arrival", 50, WorldEventPhase.Arrival,
+                WorldEventKind.MaterialCredit, "site", 1, ResourceKind.Metal));
+            Assert.Equal(WorldAdvanceStatus.CatchingUp, world.Advance(50, 1).Status);
+            Assert.True(world.CatchingUp);
+            Near(0, Amount(world, ResourceKind.Metal));
+            Assert.Equal(WorldAdvanceStatus.CaughtUp, world.Advance(50).Status);
+            Assert.False(world.CatchingUp);
+            Near(1, Amount(world, ResourceKind.Metal));
+        }
+
+        [Fact]
         public void ConverterCycleCannotCreateGoodsFromEmptyBuffers()
         {
             var world = World();
