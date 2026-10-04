@@ -17,6 +17,7 @@
     <Copy SourceFiles="$(MSBuildThisFileDirectory)..\Lodeworks.Ksp\bin\$(Configuration)\net48\Lodeworks.dll" DestinationFolder="$(KSPBT_ModRoot)$(KSPBT_ModPluginFolder)" />
     <Copy SourceFiles="$(MSBuildThisFileDirectory)..\Lodeworks.Sim\bin\$(Configuration)\net48\Lodeworks.Sim.dll" DestinationFolder="$(KSPBT_ModRoot)$(KSPBT_ModPluginFolder)" />
     <Copy SourceFiles="$(MSBuildThisFileDirectory)Parts\lwPhase1LockProbe.cfg" DestinationFolder="$(KSPBT_ModRoot)Parts" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)Parts\lwPhase1FuelDepotProbe.cfg" DestinationFolder="$(KSPBT_ModRoot)Parts" />
   </Target>
 </Project>
 
