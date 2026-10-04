@@ -34,7 +34,7 @@ unexpected state persists.
 
 | ID | Steps | Expected result |
 | --- | --- | --- |
-| S1 | Create `Phase1Sandbox`; open VAB without researching anything. | Probe appears in Pods and can be selected and launched. Panel says mode `SANDBOX`, reconcile `ready`, and experimental `True`. |
+| S1 | Create `Phase1Sandbox`; open VAB without researching anything. | Probe appears in Pods and can be selected and launched. Panel says mode `SANDBOX`, reconcile `ready`, and `Sandbox: part present; stock R&D not used`. KSP does not create an R&D instance in sandbox, so no experimental grant is expected there. |
 | S2 | In `Phase1Sandbox`, make a craft containing the probe, save it as `Phase1Probe`, then exit the VAB. | Craft file exists under `saves\Phase1Sandbox\Ships\VAB`. Keep this file for the import checks. |
 | A1 | Create career `Phase1A`; before researching `basicScience`, leave reward revoked. Open R&D and VAB. | Probe is absent from the editor and cannot be purchased in R&D. Panel reward `False`, experimental `False`. |
 | A2 | In `Phase1A`, grant the test reward while `basicScience` is still unresearched. Reopen or refresh VAB. | Reward `True`, but the probe remains unavailable because its separate stock science prerequisite is unmet. |

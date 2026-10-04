@@ -11,13 +11,10 @@
   <ItemGroup>
     <PackageReference Include="KSPBuildTools" Version="1.0.0" PrivateAssets="all" />
     <ProjectReference Include="..\Lodeworks.Sim\Lodeworks.Sim.csproj" />
-    <Reference Include="netstandard">
-      <HintPath>$(MSBuildProgramFiles32)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\Facades\netstandard.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
   </ItemGroup>
   <Target Name="CopySimulationAssembly" AfterTargets="Build">
     <MakeDir Directories="$(KSPBT_ModRoot)$(KSPBT_ModPluginFolder)" />
-    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\Lodeworks.Sim\bin\$(Configuration)\netstandard2.0\Lodeworks.Sim.dll" DestinationFolder="$(KSPBT_ModRoot)$(KSPBT_ModPluginFolder)" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\Lodeworks.Sim\bin\$(Configuration)\net48\Lodeworks.Sim.dll" DestinationFolder="$(KSPBT_ModRoot)$(KSPBT_ModPluginFolder)" />
   </Target>
 </Project>
+

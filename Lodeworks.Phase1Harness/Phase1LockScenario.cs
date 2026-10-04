@@ -54,7 +54,20 @@ namespace Lodeworks.Phase1Harness
             bool sandbox = HighLogic.CurrentGame.Mode == Game.Modes.SANDBOX;
             try
             {
-                lastReconcileSucceeded = adapter.Reconcile(rewards, sandbox);
+                // Stock sandbox does not create an R&D singleton. Its normal
+                // part catalogue already ignores tech and purchase gates.
+                // Verify the diagnostic PART instead of calling career R&D.
+                if (sandbox)
+                {
+                    AvailablePart? probe = PartLoader.Instance == null ? null :
+                        PartLoader.getPartInfoByName(ProbeName);
+                    lastReconcileSucceeded = probe != null &&
+                        probe.TechRequired == Phase1BlueprintAdapter.LockedTechId;
+                }
+                else
+                {
+                    lastReconcileSucceeded = adapter.Reconcile(rewards, false);
+                }
                 if (!lastReconcileSucceeded && !warnedUnavailable)
                 {
                     warnedUnavailable = true;
@@ -111,11 +124,16 @@ namespace Lodeworks.Phase1Harness
 
         private static string Snapshot()
         {
-            if (ResearchAndDevelopment.Instance == null || PartLoader.Instance == null)
-                return "Stock state: R&D or PartLoader unavailable";
+            if (PartLoader.Instance == null)
+                return "Stock state: PartLoader unavailable";
             AvailablePart part = PartLoader.getPartInfoByName(ProbeName);
             if (part == null)
                 return "Stock state: diagnostic PART missing";
+            if (HighLogic.CurrentGame != null &&
+                HighLogic.CurrentGame.Mode == Game.Modes.SANDBOX)
+                return "Sandbox: part present; stock R&D not used";
+            if (ResearchAndDevelopment.Instance == null)
+                return "Stock state: career/science R&D unavailable";
             bool science = ResearchAndDevelopment.GetTechnologyState(Prerequisite) ==
                 RDTech.State.Available;
             return "Science=" + science + " Experimental=" +
