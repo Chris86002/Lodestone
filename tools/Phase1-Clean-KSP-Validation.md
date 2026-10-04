@@ -65,11 +65,12 @@ Added 1 t diagnostic cargo to part `1426767126`: connected mass rose `1.36500000
 
 Invoked diagnostic `DockToVessel` again at `68.179 m`; KSP logged `Docking to vessel Phase1 Dock B` (`:3923-3927`). Both part IDs then reported the second vessel's GUID/persistent ID and combined mass `2.3650000095 t`, with each part's ledger and cargo amount unchanged (`:3928-3931`). KSP's Set Orbit changed the merged vessel from periapsis ~86.3 km to circular 100 km. Both parts retained their IDs and combined mass `2.3650000095 t` (`:3954-3957`). After quicksave, Tracking Station logged the **unloaded, packed two-core vessel** with the same GUID/persistent ID and `2.36499977 t` mass (`:4015`, repeated at `:4047`, `:4061`, `:4073`). On **orbital flight reload**, both `OnStart Orbital` entries reported `packed=True`, the same IDs, orbit, tank and ledger quantities, `1 t` cargo on only the intended part, and `2.3650000095 t` connected mass (`:4121-4124`). The final quicksave holds two parts in one vessel. The unloaded difference is ~`0.00000024 t`, consistent with float rounding; no duplicated or missing mass was observed in these loaded, packed, docked, undocked, unloaded, and reloaded states.
 
-## Open Phase 1 gates
+## Open validation limits
 
-- Prove selected-tank versus reachable remote-tank flow with a deliberately crossfeed-capable docked fixture. The current two-tank docked run shows only selected-tank changes and therefore does not establish transfer from a connected remote tank.
-- Exercise and record a depot **clearance response**, if required by sections 18/19.2. The diagnostic logs identity and orbit but does not calculate clearance; no clearance result is claimed.
-- KSP 1.12.3 and 1.12.4 were not installed for smoke tests.
+- The bridge selected a tank on the docked vessel and measured its actual stock transfer. The second tank remained unchanged, including when the selected tank exhausted. Choosing and verifying a *different* connected tank through stock resource-flow rules remains untested; this run does not claim it.
+- The diagnostic logs identity and orbit but does not calculate depot registration clearance. No clearance result is claimed here.
+- KSP 1.12.3 and 1.12.4 were not installed, so only 1.12.5 was run. The smoke test of available supported version bounds is still a release check.
+- KSP logged `Event Undock not assigned to state Disengage`; the subsequent in-game split, ID remap, separate masses, and redock were observed. This warning remains visible for review.
 
-Phase 1 remains open; no Phase 2 implementation is justified by this record.
+Phase 1 remains open pending the unverified behavior above. Section 19.2 is **not** accepted as a release gate, and Phase 2 has not begun.
 
