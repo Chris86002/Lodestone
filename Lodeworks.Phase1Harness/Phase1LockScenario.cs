@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using Contracts;
 using Lodeworks.Ksp;
 using UnityEngine;
 
@@ -22,10 +24,13 @@ namespace Lodeworks.Phase1Harness
         private float nextReconcile;
         private bool lastReconcileSucceeded;
         private bool warnedUnavailable;
+        private bool contractEventsRegistered;
+        private float nextVesselObservation;
 
         public override void OnLoad(ConfigNode node)
         {
             base.OnLoad(node);
+            RegisterContractEvents();
             rewards.Clear();
             if (bool.TryParse(node.GetValue("probeRewarded"), out bool rewarded) && rewarded)
                 rewards.Add(ProbeName);
@@ -33,6 +38,47 @@ namespace Lodeworks.Phase1Harness
             warnedUnavailable = false;
             Log("Loaded current save; reward=" + rewarded);
         }
+
+        private void OnDestroy()
+        {
+            if (!contractEventsRegistered) return;
+            GameEvents.Contract.onOffered.Remove(OnDiagnosticOffered);
+            GameEvents.Contract.onAccepted.Remove(OnDiagnosticAccepted);
+            GameEvents.Contract.onCompleted.Remove(OnDiagnosticCompleted);
+            contractEventsRegistered = false;
+        }
+
+        private void RegisterContractEvents()
+        {
+            if (contractEventsRegistered) return;
+            GameEvents.Contract.onOffered.Add(OnDiagnosticOffered);
+            GameEvents.Contract.onAccepted.Add(OnDiagnosticAccepted);
+            GameEvents.Contract.onCompleted.Add(OnDiagnosticCompleted);
+            contractEventsRegistered = true;
+        }
+
+        private void OnDiagnosticOffered(Contract contract)
+        {
+            if (contract is Phase1DiagnosticContract)
+                Log("Stock onOffered state=" + contract.ContractState + " funds=" + Funds());
+        }
+
+        private void OnDiagnosticAccepted(Contract contract)
+        {
+            if (contract is Phase1DiagnosticContract)
+                Log("Stock onAccepted state=" + contract.ContractState + " funds=" + Funds());
+        }
+
+        private void OnDiagnosticCompleted(Contract contract)
+        {
+            if (!(contract is Phase1DiagnosticContract)) return;
+            bool firstReward = rewards.Add(ProbeName);
+            Reconcile();
+            Log("Stock onCompleted; first blueprint reward=" + firstReward +
+                " state=" + contract.ContractState + " funds=" + Funds() + " " + Snapshot());
+        }
+
+        private static string Funds() => Funding.Instance?.Funds.ToString("G17") ?? "unavailable";
 
         public override void OnSave(ConfigNode node)
         {
@@ -47,6 +93,18 @@ namespace Lodeworks.Phase1Harness
                 return;
             nextReconcile = Time.realtimeSinceStartup + 2f;
             Reconcile();
+            if (HighLogic.LoadedScene == GameScenes.TRACKSTATION &&
+                Time.realtimeSinceStartup >= nextVesselObservation)
+            {
+                nextVesselObservation = Time.realtimeSinceStartup + 10f;
+                foreach (Vessel testVessel in FlightGlobals.Vessels)
+                    Log("Tracking vessel=" + testVessel.vesselName +
+                        " id=" + testVessel.id.ToString("D") +
+                        " persistent=" + testVessel.persistentId +
+                        " loaded=" + testVessel.loaded +
+                        " packed=" + testVessel.packed +
+                        " totalMass+t=" + testVessel.GetTotalMass().ToString("G17"));
+            }
         }
 
         private void Reconcile()
@@ -118,8 +176,66 @@ namespace Lodeworks.Phase1Harness
             }
             if (GUILayout.Button("Log current stock state"))
                 Log(Snapshot());
+            GUILayout.Space(5);
+            GUILayout.Label("Contract diagnostic: " + ContractSnapshot());
+            if (GUILayout.Button("Offer diagnostic stock contract")) OfferDiagnosticContract();
+            if (GUILayout.Button("Finish accepted diagnostic contract")) FinishDiagnosticContract();
             GUILayout.Label("Save through KSP, then reload to test persistence.");
             GUI.DragWindow();
+        }
+
+        private static string ContractSnapshot()
+        {
+            if (ContractSystem.Instance == null) return "stock ContractSystem unavailable";
+            var contract = ContractSystem.Instance.Contracts
+                .OfType<Phase1DiagnosticContract>().FirstOrDefault();
+            return contract == null ? "none; mode=" + HighLogic.CurrentGame.Mode :
+                contract.ContractState + "; funds=" + Funds();
+        }
+
+        private static void OfferDiagnosticContract()
+        {
+            if (HighLogic.CurrentGame.Mode == Game.Modes.SANDBOX ||
+                ContractSystem.Instance == null)
+            {
+                Log("Offer unavailable in mode=" + HighLogic.CurrentGame.Mode +
+                    "; ContractSystem=" + (ContractSystem.Instance != null));
+                return;
+            }
+            Contract contract;
+            Phase1DiagnosticContract.AllowGeneration = true;
+            try
+            {
+                contract = ContractSystem.Instance.GenerateContract(174805,
+                    Contract.ContractPrestige.Trivial, typeof(Phase1DiagnosticContract));
+            }
+            finally
+            {
+                Phase1DiagnosticContract.AllowGeneration = false;
+            }
+            if (contract != null && contract.Offer())
+                ContractSystem.Instance.Contracts.Add(contract);
+            Log("GenerateContract returned=" + (contract?.ContractState.ToString() ?? "null") +
+                " funds=" + Funds());
+        }
+
+        private static void FinishDiagnosticContract()
+        {
+            var contract = ContractSystem.Instance?.Contracts
+                .OfType<Phase1DiagnosticContract>()
+                .FirstOrDefault(c => c.ContractState == Contract.State.Active);
+            var parameter = contract?.GetParameter(typeof(Phase1DiagnosticParameter))
+                as Phase1DiagnosticParameter;
+            if (parameter == null)
+            {
+                Log("Finish refused: no active diagnostic contract");
+                return;
+            }
+            Log("Before parameter completion state=" + contract!.ContractState +
+                " funds=" + Funds());
+            parameter.CompleteFromDiagnosticPanel();
+            Log("After parameter completion state=" + contract.ContractState +
+                " funds=" + Funds());
         }
 
         private static string Snapshot()
