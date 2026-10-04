@@ -30,6 +30,31 @@ namespace Lodeworks.Sim
         public ResourceKind Kind { get; }
         public double Units { get; }
     }
+    // A world interval's net physical change. Positive ore carries a stable
+    // provenance template; negative ore identifies the exact existing lot.
+    public readonly struct SimulationMaterialDelta
+    {
+        public SimulationMaterialDelta(ResourceKind kind, double signedUnits,
+            string? oreBatchId = null, OreBatch? producedOre = null)
+        {
+            if (!Enum.IsDefined(typeof(ResourceKind), kind) || !Phase2Numbers.Finite(signedUnits))
+                throw new ArgumentOutOfRangeException(nameof(signedUnits));
+            if (kind == ResourceKind.Ore)
+            {
+                OreBatch? batch = producedOre;
+                if (signedUnits > 0 && (batch == null || batch.BatchId != oreBatchId))
+                    throw new ArgumentException("Produced ore needs its exact provenance lot.");
+                Phase2Numbers.Id(oreBatchId!, nameof(oreBatchId));
+            }
+            else if (oreBatchId != null || producedOre != null)
+                throw new ArgumentException("Only ore carries lot metadata.");
+            Kind = kind; SignedUnits = signedUnits; OreBatchId = oreBatchId; ProducedOre = producedOre;
+        }
+        public ResourceKind Kind { get; }
+        public double SignedUnits { get; }
+        public string? OreBatchId { get; }
+        public OreBatch? ProducedOre { get; }
+    }
     public sealed class MaterialBookSnapshot
     {
         public const int CurrentVersion = 2;
@@ -123,6 +148,67 @@ namespace Lodeworks.Sim
             if (result.Status == ReservationStatus.Applied)
             { stores[record.EndpointId] = stagedStore; reservations = stagedBook; }
             return result;
+        }
+        // Called only by WorldSimulator after it solves simultaneous flows for
+        // one shared interval. The cursor and this inventory commit are saved
+        // together in the world snapshot; it is not a player command receipt.
+        internal bool ApplySimulationDeltas(string endpointId, IEnumerable<SimulationMaterialDelta> deltas)
+        {
+            if (!stores.TryGetValue(Phase2Numbers.Id(endpointId, nameof(endpointId)), out MaterialInventory store))
+                return false;
+            if (deltas == null) throw new ArgumentNullException(nameof(deltas));
+            var grouped = new Dictionary<(ResourceKind Kind, string? Lot), double>();
+            var templates = new Dictionary<string, OreBatch>(StringComparer.Ordinal);
+            foreach (SimulationMaterialDelta delta in deltas)
+            {
+                var key = (delta.Kind, delta.OreBatchId);
+                double next = (grouped.TryGetValue(key, out double old) ? old : 0) + delta.SignedUnits;
+                if (!Phase2Numbers.Finite(next)) throw new ArgumentOutOfRangeException(nameof(deltas));
+                grouped[key] = next;
+                if (delta.ProducedOre != null) templates[delta.OreBatchId!] = delta.ProducedOre;
+            }
+            var net = grouped.Where(x => Math.Abs(x.Value) > Phase2Numbers.Epsilon).ToArray();
+            foreach (var pair in net)
+            {
+                double amount = pair.Value;
+                if (amount < 0 && -amount > reservations.AvailableMatter(store, pair.Key.Kind,
+                    pair.Key.Lot) + Phase2Numbers.Epsilon) return false;
+            }
+            foreach (var kind in net.Select(x => x.Key.Kind).Distinct())
+                if (net.Where(x => x.Key.Kind == kind).Sum(x => x.Value) >
+                    reservations.AvailableCapacity(store, kind) + Phase2Numbers.Epsilon) return false;
+            foreach (ProtectedFloor floor in reservations.Floors.Where(x => x.EndpointId == endpointId))
+            {
+                if (floor.Kind != ResourceKind.Ore) continue; // bulk has one net key
+                double physical = store.Ore.Where(floor.Matches).Sum(x => x.Units);
+                double claimed = reservations.Records.Where(x => x.State == ReservationState.Committed &&
+                    x.Kind == ReservationKind.Matter && x.EndpointId == endpointId &&
+                    x.Resource == ResourceKind.Ore && store.Ore.Any(lot =>
+                        lot.BatchId == x.OreBatchId && floor.Matches(lot))).Sum(x => x.Quantity);
+                double change = net.Where(x => x.Key.Kind == ResourceKind.Ore &&
+                    (store.Ore.FirstOrDefault(lot => lot.BatchId == x.Key.Lot) ??
+                    (x.Key.Lot != null && templates.TryGetValue(x.Key.Lot, out OreBatch template) ?
+                        template : null)) is OreBatch lot && floor.Matches(lot)).Sum(x => x.Value);
+                if (change < 0 && physical - claimed + change < floor.EffectiveQuantity - Phase2Numbers.Epsilon)
+                    return false;
+            }
+            MaterialInventory staged = MaterialInventory.Restore(store.Snapshot());
+            foreach (var pair in net.Where(x => x.Value < 0))
+            {
+                bool removed = pair.Key.Kind == ResourceKind.Ore ?
+                    staged.TryRemoveOre(pair.Key.Lot!, -pair.Value, out _) :
+                    staged.TryRemove(pair.Key.Kind, -pair.Value);
+                if (!removed) return false;
+            }
+            foreach (var pair in net.Where(x => x.Value > 0))
+            {
+                bool added = pair.Key.Kind == ResourceKind.Ore ?
+                    staged.TryAddOre(templates[pair.Key.Lot!].WithUnits(pair.Value)) :
+                    staged.TryAdd(pair.Key.Kind, pair.Value);
+                if (!added) return false;
+            }
+            stores[endpointId] = staged;
+            return true;
         }
         public MaterialCommandResult RemoveStorage(string commandId, string endpointId, string storageId)
         {
