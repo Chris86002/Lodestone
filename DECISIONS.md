@@ -44,3 +44,11 @@ In the corrected modded KSP 1.12.5 run, the tester observed a locked career prob
 
 A subsequent `SCIENCE_SANDBOX` run showed the same reward-plus-stock-science gating in the tester's modded installation. The diagnostic log recorded all four availability flags false before researching `basicScience` and all four true afterward. A clean Squad-plus-Lodeworks run remains the validation gate for this part-lock route.
 
+### Clean runtime observations — 2026-10-03
+
+- Use a separate KSP 1.12.5.3190 / Steam 03190 directory with `GameData` roots `Squad` and `Lodeworks` for Phase 1 validation; preserve the existing Steam installation and saves. The opt-in test assembly and PART configs stay in `artifacts/Phase1Harness/GameData`, outside the normal two-DLL package.
+- The stock contract system is available in career and unavailable in science/sandbox. A corrected opt-in `Contract` subclass with `MeetRequirements` and a 10-day deadline demonstrated actual Mission Control offer/acceptance, active save/reload, completion, stock award order, and archive. Without an explicit deadline the diagnostic contract expired immediately; retain that failure in the report rather than treating the first acceptance as success.
+- On a ground vessel, positive `Part.RequestResource` consumes stock and negative requests return stock. A logged capacity-limited negative request returned only LF 5/OX 6, debited the local ledger by those actual amounts, and preserved connected mass. This does not establish cross-part tank selection or docked reachability. The forward observation needs retained log support.
+- A per-part `IPartMassModifier` returned persisted ledger and cargo mass. Ground loaded/packed/unloaded values matched after save/reload, with no observed doubling, but docked and orbital propagation remain unverified. Vessel GUID/persistent ID and landed orbit initialization were logged; no dock/undock identity remap or real orbital change was tested.
+- Keep Phase 1 unaccepted and Phase 2 untouched until the missing in-game gates in `tools/Phase1-Clean-KSP-Validation.md` are supported by evidence.
+
