@@ -146,7 +146,7 @@ namespace Lodeworks.Sim.Tests
             Near(8, Amount(restored, ResourceKind.Metal));
             Assert.False(restored.Schedule(new WorldEvent("late-external", 60,
                 WorldEventPhase.ExternalReplacement, WorldEventKind.ExternalReplacement, "site", 0,
-                captureSequence: 3, priorSnapshotId: "snap-2",
+                captureSequence: 4, priorSnapshotId: "snap-2",
                 replacement: new WorldVerifiedSnapshot("snap-3", "anchor", true,
                     new[] { "Jeb" }, "orbit:late", "Kerbin"))));
             Assert.Equal("late-event-behind-completed-equal-ut-frontier", restored.LastScheduleDiagnostic);
@@ -294,7 +294,7 @@ namespace Lodeworks.Sim.Tests
                 WorldEventKind.MaterialCredit, "site", 1, ResourceKind.Metal);
             Assert.True(world.Schedule(event1));
             Assert.False(world.Schedule(event1));
-            Assert.Throws<ArgumentException>(() => world.Schedule(new WorldEvent("same", 10,
+            Assert.False(world.Schedule(new WorldEvent("same", 10,
                 WorldEventPhase.Arrival, WorldEventKind.MaterialCredit, "site", 2, ResourceKind.Metal)));
             Assert.Equal("conflicting-reused-pending-event-id", world.LastScheduleDiagnostic);
 
@@ -308,6 +308,9 @@ namespace Lodeworks.Sim.Tests
                 captureSequence: 2, replacement: new WorldVerifiedSnapshot("same-snapshot", "anchor", true,
                     Array.Empty<string>(), "orbit-b", "Kerbin"))));
             Assert.Equal("conflicting-pending-snapshot-id", world.LastScheduleDiagnostic);
+            var saved = WorldSimulator.Restore(world.Snapshot()).Snapshot();
+            Assert.Equal(2, saved.RejectedEvents.Count);
+            Assert.Equal(2, saved.CaptureSequence);
         }
 
         [Fact]
@@ -456,7 +459,7 @@ namespace Lodeworks.Sim.Tests
             Near(Amount(reference, ResourceKind.Metal), Amount(restored, ResourceKind.Metal));
             Assert.False(restored.Schedule(new WorldEvent("arrival", 50, WorldEventPhase.Arrival,
                 WorldEventKind.MaterialCredit, "site", 80, ResourceKind.Metal)));
-            Assert.Throws<ArgumentException>(() => restored.Schedule(new WorldEvent("arrival", 100,
+            Assert.False(restored.Schedule(new WorldEvent("arrival", 100,
                 WorldEventPhase.Arrival, WorldEventKind.MaterialCredit, "site", 80, ResourceKind.Metal)));
             Assert.Equal("conflicting-reused-completed-event-id", restored.LastScheduleDiagnostic);
         }

@@ -254,6 +254,18 @@ namespace Lodeworks.Sim
         public string Id { get; }
         public string Signature { get; }
     }
+    public sealed class WorldScheduleRejection
+    {
+        public WorldScheduleRejection(string eventId, string signature, string reason)
+        {
+            EventId = Phase2Numbers.Id(eventId, nameof(eventId));
+            Signature = signature ?? throw new ArgumentNullException(nameof(signature));
+            Reason = Phase2Numbers.Id(reason, nameof(reason));
+        }
+        public string EventId { get; }
+        public string Signature { get; }
+        public string Reason { get; }
+    }
     public sealed class WorldDumpTotal
     {
         public WorldDumpTotal(string converterId, ResourceKind resource, double units)
@@ -275,7 +287,8 @@ namespace Lodeworks.Sim
             IEnumerable<WorldEvent> pendingEvents, IEnumerable<WorldEventReceipt> completedEvents,
             IEnumerable<WorldDumpTotal> dumped, long captureSequence = 0,
             WorldPhaseFrontier? frontier = null, IEnumerable<WorldVerifiedSnapshot>? verifiedSnapshots = null,
-            IEnumerable<string>? currentSnapshotIds = null, double maxTimestampUncertaintyUT = 0)
+            IEnumerable<string>? currentSnapshotIds = null, double maxTimestampUncertaintyUT = 0,
+            IEnumerable<WorldScheduleRejection>? rejectedEvents = null)
         {
             CursorUT = Phase2Numbers.Nonnegative(cursorUT, nameof(cursorUT));
             TargetUT = Phase2Numbers.Nonnegative(targetUT, nameof(targetUT));
@@ -291,6 +304,7 @@ namespace Lodeworks.Sim
             MaxTimestampUncertaintyUT = Phase2Numbers.Nonnegative(maxTimestampUncertaintyUT, nameof(maxTimestampUncertaintyUT));
             VerifiedSnapshots = Array.AsReadOnly((verifiedSnapshots ?? Array.Empty<WorldVerifiedSnapshot>()).ToArray());
             CurrentSnapshotIds = Array.AsReadOnly((currentSnapshotIds ?? Array.Empty<string>()).ToArray());
+            RejectedEvents = Array.AsReadOnly((rejectedEvents ?? Array.Empty<WorldScheduleRejection>()).ToArray());
         }
         public int Version => CurrentVersion;
         public double CursorUT { get; }
@@ -307,6 +321,7 @@ namespace Lodeworks.Sim
         public IReadOnlyList<WorldVerifiedSnapshot> VerifiedSnapshots { get; }
         public IReadOnlyList<string> CurrentSnapshotIds { get; }
         public double MaxTimestampUncertaintyUT { get; }
+        public IReadOnlyList<WorldScheduleRejection> RejectedEvents { get; }
     }
 
     public sealed class WorldAdvanceResult
@@ -328,6 +343,7 @@ namespace Lodeworks.Sim
         private readonly Dictionary<string, WorldConverter> converters = new Dictionary<string, WorldConverter>(StringComparer.Ordinal);
         private readonly Dictionary<string, WorldEvent> events = new Dictionary<string, WorldEvent>(StringComparer.Ordinal);
         private readonly Dictionary<string, string> completed = new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly List<WorldScheduleRejection> rejectedEvents = new List<WorldScheduleRejection>();
         private readonly Dictionary<string, WorldVerifiedSnapshot> verifiedSnapshots = new Dictionary<string, WorldVerifiedSnapshot>(StringComparer.Ordinal);
         private readonly Dictionary<string, string> currentSnapshotIds = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly Dictionary<(string Id, ResourceKind Kind), double> dumped =
@@ -394,41 +410,57 @@ namespace Lodeworks.Sim
         {
             LastScheduleDiagnostic = string.Empty;
             if (item == null) throw new ArgumentNullException(nameof(item));
-            if (!power.ContainsKey(item.EndpointId)) throw new ArgumentException("Unknown event endpoint.");
             if (completed.TryGetValue(item.Id, out string signature))
             {
                 if (signature != item.Signature)
-                { LastScheduleDiagnostic = "conflicting-reused-completed-event-id"; throw new ArgumentException("Conflicting completed event ID."); }
+                { ConsumeCaptureSequence(item); return Reject(item, "conflicting-reused-completed-event-id"); }
                 return false;
             }
             if (events.TryGetValue(item.Id, out WorldEvent existing))
             {
                 if (existing.Signature != item.Signature)
-                { LastScheduleDiagnostic = "conflicting-reused-pending-event-id"; throw new ArgumentException("Conflicting pending event ID."); }
+                { ConsumeCaptureSequence(item); return Reject(item, "conflicting-reused-pending-event-id"); }
                 return false;
             }
-            if (item.UT < cursorUT) { LastScheduleDiagnostic = "event-before-cursor"; return false; }
-            if (frontier != null && Math.Abs(item.UT - frontier.UT) <= Phase2Numbers.Epsilon &&
-                CompareFrontier(item, frontier) <= 0)
-            { LastScheduleDiagnostic = "late-event-behind-completed-equal-ut-frontier"; return false; }
+            // Consume every newly observed external sequence even when quarantined, so a rejected
+            // observation cannot make a later sequence appear to reuse an older capture number.
             if (item.Kind == WorldEventKind.ExternalReplacement)
             {
-                if (item.CaptureSequence <= captureSequence)
-                { LastScheduleDiagnostic = "non-monotonic-capture-sequence"; return false; }
+                if (item.CaptureSequence <= captureSequence) return Reject(item, "non-monotonic-capture-sequence");
+                captureSequence = item.CaptureSequence;
+            }
+            if (!power.ContainsKey(item.EndpointId)) return Reject(item, "unknown-event-endpoint");
+            if (item.UT < cursorUT) return Reject(item, "event-before-cursor");
+            if (frontier != null && Math.Abs(item.UT - frontier.UT) <= Phase2Numbers.Epsilon &&
+                CompareFrontier(item, frontier) <= 0)
+                return Reject(item, "late-event-behind-completed-equal-ut-frontier");
+            if (item.Kind == WorldEventKind.ExternalReplacement)
+            {
                 if (item.Replacement == null || (item.PriorSnapshotId != null && !HasPriorSnapshot(item.PriorSnapshotId,
                     item.Replacement.EntityId)))
-                { LastScheduleDiagnostic = "unknown-or-mismatched-prior-snapshot"; return false; }
+                    return Reject(item, "unknown-or-mismatched-prior-snapshot");
                 if (verifiedSnapshots.TryGetValue(item.Replacement.SnapshotId, out WorldVerifiedSnapshot existingSnapshot) &&
                     existingSnapshot.Signature != item.Replacement.Signature)
-                { LastScheduleDiagnostic = "conflicting-snapshot-id"; return false; }
+                    return Reject(item, "conflicting-snapshot-id");
                 if (events.Values.Any(x => x.Kind == WorldEventKind.ExternalReplacement &&
                     x.Replacement?.SnapshotId == item.Replacement.SnapshotId &&
                     x.Replacement.Signature != item.Replacement.Signature))
-                { LastScheduleDiagnostic = "conflicting-pending-snapshot-id"; return false; }
-                captureSequence = item.CaptureSequence;
+                    return Reject(item, "conflicting-pending-snapshot-id");
             }
             events.Add(item.Id, item);
             return true;
+        }
+        private bool Reject(WorldEvent item, string reason)
+        {
+            LastScheduleDiagnostic = reason;
+            if (!rejectedEvents.Any(x => x.EventId == item.Id && x.Signature == item.Signature))
+                rejectedEvents.Add(new WorldScheduleRejection(item.Id, item.Signature, reason));
+            return false;
+        }
+        private void ConsumeCaptureSequence(WorldEvent item)
+        {
+            if (item.Kind == WorldEventKind.ExternalReplacement && item.CaptureSequence > captureSequence)
+                captureSequence = item.CaptureSequence;
         }
         private bool HasPriorSnapshot(string snapshotId, string entityId) =>
             (verifiedSnapshots.TryGetValue(snapshotId, out WorldVerifiedSnapshot prior) && prior.EntityId == entityId) ||
@@ -452,7 +484,8 @@ namespace Lodeworks.Sim
             dumped.OrderBy(x => x.Key.Id, StringComparer.Ordinal).ThenBy(x => x.Key.Kind)
                 .Select(x => new WorldDumpTotal(x.Key.Id, x.Key.Kind, x.Value)), captureSequence, frontier,
             verifiedSnapshots.Values.OrderBy(x => x.SnapshotId, StringComparer.Ordinal),
-            currentSnapshotIds.Values.OrderBy(x => x, StringComparer.Ordinal), maxTimestampUncertaintyUT);
+            currentSnapshotIds.Values.OrderBy(x => x, StringComparer.Ordinal), maxTimestampUncertaintyUT,
+            rejectedEvents.OrderBy(x => x.EventId, StringComparer.Ordinal).ThenBy(x => x.Signature, StringComparer.Ordinal));
         public static WorldSimulator Restore(WorldSnapshot snapshot)
         {
             if (snapshot == null || snapshot.Version != WorldSnapshot.CurrentVersion)
@@ -471,6 +504,12 @@ namespace Lodeworks.Sim
                     world.currentSnapshotIds.ContainsKey(verified.EntityId))
                     throw new ArgumentException("Invalid current verified snapshot.", nameof(snapshot));
                 world.currentSnapshotIds.Add(verified.EntityId, id);
+            }
+            foreach (WorldScheduleRejection rejection in snapshot.RejectedEvents)
+            {
+                if (world.rejectedEvents.Any(x => x.EventId == rejection.EventId && x.Signature == rejection.Signature))
+                    throw new ArgumentException("Duplicate rejected event record.", nameof(snapshot));
+                world.rejectedEvents.Add(rejection);
             }
             foreach (WorldPower state in snapshot.Power) world.RegisterPower(state);
             foreach (WorldConverter converter in snapshot.Converters) world.RegisterConverter(converter);
