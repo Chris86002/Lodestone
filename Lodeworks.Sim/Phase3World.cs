@@ -436,8 +436,12 @@ namespace Lodeworks.Sim
                 return Reject(item, "late-event-behind-completed-equal-ut-frontier");
             if (item.Kind == WorldEventKind.ExternalReplacement)
             {
-                if (item.Replacement == null || (item.PriorSnapshotId != null && !HasPriorSnapshot(item.PriorSnapshotId,
-                    item.Replacement.EntityId)))
+                WorldEvent? priorPending = item.Replacement == null ? null : events.Values.Where(x =>
+                    x.Kind == WorldEventKind.ExternalReplacement && x.Replacement?.EntityId == item.Replacement.EntityId)
+                    .OrderByDescending(x => x.CaptureSequence).FirstOrDefault();
+                if (priorPending != null && item.UT < priorPending.UT)
+                    return Reject(item, "replacement-effective-ut-regresses-capture-order");
+                if (item.Replacement == null || item.PriorSnapshotId != LatestSnapshotId(item.Replacement.EntityId))
                     return Reject(item, "unknown-or-mismatched-prior-snapshot");
                 if (verifiedSnapshots.TryGetValue(item.Replacement.SnapshotId, out WorldVerifiedSnapshot existingSnapshot) &&
                     existingSnapshot.Signature != item.Replacement.Signature)
@@ -462,10 +466,13 @@ namespace Lodeworks.Sim
             if (item.Kind == WorldEventKind.ExternalReplacement && item.CaptureSequence > captureSequence)
                 captureSequence = item.CaptureSequence;
         }
-        private bool HasPriorSnapshot(string snapshotId, string entityId) =>
-            (verifiedSnapshots.TryGetValue(snapshotId, out WorldVerifiedSnapshot prior) && prior.EntityId == entityId) ||
-            events.Values.Any(x => x.Kind == WorldEventKind.ExternalReplacement &&
-                x.Replacement?.SnapshotId == snapshotId && x.Replacement.EntityId == entityId);
+        private string? LatestSnapshotId(string entityId)
+        {
+            WorldEvent? pending = events.Values.Where(x => x.Kind == WorldEventKind.ExternalReplacement &&
+                x.Replacement?.EntityId == entityId).OrderByDescending(x => x.CaptureSequence).FirstOrDefault();
+            if (pending != null) return pending.Replacement!.SnapshotId;
+            return currentSnapshotIds.TryGetValue(entityId, out string currentId) ? currentId : null;
+        }
         private static int CompareFrontier(WorldEvent item, WorldPhaseFrontier frontier)
         {
             if (frontier.BoundaryClosed) return -1;

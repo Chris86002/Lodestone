@@ -305,12 +305,15 @@ namespace Lodeworks.Sim.Tests
                 captureSequence: 1, replacement: replacement)));
             Assert.False(world.Schedule(new WorldEvent("external-two", 10,
                 WorldEventPhase.ExternalReplacement, WorldEventKind.ExternalReplacement, "site", 0,
-                captureSequence: 2, replacement: new WorldVerifiedSnapshot("same-snapshot", "anchor", true,
+                captureSequence: 2, priorSnapshotId: "same-snapshot",
+                replacement: new WorldVerifiedSnapshot("same-snapshot", "anchor", true,
                     Array.Empty<string>(), "orbit-b", "Kerbin"))));
             Assert.Equal("conflicting-pending-snapshot-id", world.LastScheduleDiagnostic);
             var saved = WorldSimulator.Restore(world.Snapshot()).Snapshot();
             Assert.Equal(2, saved.RejectedEvents.Count);
             Assert.Equal(2, saved.CaptureSequence);
+            Assert.Contains(saved.RejectedEvents, x => x.Reason == "conflicting-reused-pending-event-id");
+            Assert.Contains(saved.RejectedEvents, x => x.Reason == "conflicting-pending-snapshot-id");
         }
 
         [Fact]
