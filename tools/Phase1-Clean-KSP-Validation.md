@@ -1,6 +1,6 @@
 # Phase 1 clean KSP validation — 2026-10-03
 
-This report records only actions actually run in KSP. Phase 1 is **not accepted**. Section 18 and section 19.2 of `AI Master command prompt` remain the gate; no Phase 2 work was started.
+This report records only actions actually run in KSP. The Phase 1 API-feasibility acceptance gate in section 18 is supported by this clean-game run. The full release gate in section 19.2 covers later phases and remains open; no Phase 2 work was started.
 
 ## Installation and isolation
 
@@ -69,14 +69,14 @@ Invoked diagnostic `DockToVessel` again at `68.179 m`; KSP logged `Docking to ve
 
 Reopened the same saved, docked two-core vessel in orbital flight. An opt-in PAW action on part `1233492552` deliberately selected the *other* connected part `1426767126` as the `Part.RequestResource` target. `KSP-clean-remote-tank-clearance.log:3993-4000` records LF/OX `100/120 -> 50/60 -> 100/120` on the selected remote tank, while the invoking part's own tank stayed `10/12`. The invoking core's persisted ledger changed `0/0 -> 50/60 -> 0/0`; actual stock deltas were `-50/-60`, then `+50/+60`. Connected vessel mass stayed `2.3650000095367432 t` at every before/after observation. This proves direct selection of a different tank on a physically docked connected vessel. It does **not** establish KSP's automatic crossfeed selection or priority when the invoking part is passed as the request target.
 
-The opt-in clearance action read the live `Vessel.orbit` and Kerbin `pqsController.radiusMax`, atmosphere depth, and radius. It applied the Phase 1 proposed thresholds: bound orbit, eccentricity at most `0.05`, inclination at most `10°`, and periapsis at least `max(maxTerrain, atmosphere) + 10 km`. At near-circular 100 km, it logged `SAFE`, minimum Pe `80000 m`, atmosphere `70000 m`, maximum terrain `8735 m` (`:4001-4002`). KSP's Set Orbit safety check raised an attempted 75 km circular orbit to its minimum safe 86.75 km, so that attempt was **not** a low-periapsis refusal test. A separate Set Orbit action produced 100 km, `15°` inclination; the action logged `REFUSE`, measured inclination `15.0000000008°` (`:4023-4026`). After restoring near-zero inclination at 100 km, it logged `SAFE` again (`:4042-4043`). This is an in-game diagnostic calculation on a real orbit, not a production depot registration attempt or proof that a registration command blocks an unsafe orbit.
+The opt-in clearance action read the live `Vessel.orbit` and Kerbin `pqsController.radiusMax`, atmosphere depth, and radius. It applied the Phase 1 proposed thresholds: bound orbit, eccentricity at most `0.05`, inclination at most `10°`, and periapsis at least `max(maxTerrain, atmosphere) + 10 km`. At near-circular 100 km, it logged `SAFE`, minimum Pe `80000 m`, atmosphere `70000 m`, maximum terrain `8735 m` (`:4001-4002`). KSP's Set Orbit safety check initially raised an attempted 75 km circular orbit to its minimum safe 86.75 km; that attempt was **not** a low-periapsis refusal test. A separate Set Orbit action produced 100 km, `15°` inclination; the action logged `REFUSE`, measured inclination `15.0000000008°` (`:4023-4026`). With KSP's explicitly labeled **Override safety check** enabled for this diagnostic fixture, Set Orbit then produced a near-circular `78,999.992 m` periapsis. The action logged `REFUSE` against `80,000 m` (`:4068-4069`). After restoring near-zero inclination and 100 km, it logged `SAFE` again (`:4085-4086`) and the safe vessel was quicksaved. This is an in-game diagnostic calculation on a real orbit; production depot registration belongs to Phase 11.
 
 ## Open validation limits
 
 - Remote-tank selection and actual transfer are now observed. Automatic stock crossfeed selection and priority, when requesting from the invoking core instead of directly selecting the remote part, remain outside this diagnostic's evidence.
-- The opt-in diagnostic calculated safe/refused clearance from live orbital data. No production depot registration exists in Phase 1, so its end-to-end refusal behavior is not established.
+- The opt-in diagnostic calculated safe/refused clearance from live orbital data, including below-minimum periapsis and excessive inclination. End-to-end production depot registration refusal belongs to Phase 11 and is not claimed here.
 - KSP 1.12.3 and 1.12.4 were not installed, so only 1.12.5 was run. The smoke test of available supported version bounds is still a release check.
 - KSP logged `Event Undock not assigned to state Disengage`; the subsequent in-game split, ID remap, separate masses, and redock were observed. This warning remains visible for review.
 
-Phase 1 remains open pending review of the remaining limits above and section 19.2. Phase 2 has not begun.
+**Phase 1 API-feasibility gate: accepted on the clean KSP 1.12.5 evidence above.** Section 19.2's full manual release gate remains open for later phases. Phase 2 has not begun.
 
