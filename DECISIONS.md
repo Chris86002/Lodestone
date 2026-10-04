@@ -40,3 +40,5 @@ The first interactive sandbox run loaded the diagnostic PART and allowed it to l
 
 The same run showed `ResearchAndDevelopment.Instance` is absent in sandbox. Sandbox already makes the probe part available through stock rules; the diagnostic harness now verifies the configured PART without calling the career R&D adapter in that mode. Career/science reconciliation still uses the actual adapter. The sandbox observation alone cannot prove career locks or imported-craft preflight.
 
+In the corrected modded KSP 1.12.5 run, the tester observed a locked career probe, reward gated by `basicScience`, persistence across reload, existing-vessel loading after revoke, and save isolation. The imported craft's generic stock preflight warning became actionable evidence only after the *same craft* launched when the reward was granted without another change. This supports the stock route in that installation; a clean-install run and science-mode observation remain before treating the part-lock gate as accepted.
+
