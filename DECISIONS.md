@@ -140,3 +140,4 @@ A subsequent `SCIENCE_SANDBOX` run showed the same reward-plus-stock-science gat
 The candidate is on branch `revision51-phase3-reconciliation`. Its R51-006/R51-007 rows remain pending review and merge. Stop here; do not start Phase 3A.
 
 - Follow-up review fix: persist schedule rejection records in the world snapshot, including conflicting ID reuse and late equal-UT insertion; do not rely only on the transient `LastScheduleDiagnostic`. New external observations advance the saved capture-sequence high-water mark before validation, including quarantined observations.
+- Pending replacements must name the latest planned verified snapshot for that entity, and their effective UT cannot regress behind the previous capture. This prevents sibling snapshot branches and sequence-correct but time-inverted updates during backlog replay.
