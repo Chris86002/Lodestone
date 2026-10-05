@@ -9,13 +9,14 @@ namespace Lodeworks.Sim.Tests
     public sealed class Phase3WorldTests
     {
         private static WorldSimulator World(double metal = 0, double parts = 0,
-            double capacity = 2000, double energy = 0, double generation = 20)
+            double capacity = 2000, double energy = 0, double generation = 20,
+            double maxTimestampUncertaintyUT = 0)
         {
             var inventory = new MaterialInventory("site");
             Assert.True(inventory.TryAdd(ResourceKind.Metal, metal));
             Assert.True(inventory.TryAdd(ResourceKind.Parts, parts));
             var book = new MaterialCommandBook(); Assert.True(book.Register(inventory));
-            var world = new WorldSimulator(0, book);
+            var world = new WorldSimulator(0, book, maxTimestampUncertaintyUT);
             world.RegisterPower(new WorldPower("site", capacity, energy, generation));
             return world;
         }
@@ -103,6 +104,216 @@ namespace Lodeworks.Sim.Tests
             Near(3, Amount(world, ResourceKind.Metal));
             Near(.5, Amount(world, ResourceKind.Parts));
             Assert.Equal(2, world.Snapshot().CompletedEventIds.Count);
+        }
+
+        [Fact]
+        public void ExternalReplacementUsesCaptureOrderBeforeCommandsAndKeepsPriorSnapshot()
+        {
+            var world = World(metal: 10);
+            var before = new WorldVerifiedSnapshot("snap-0", "anchor", true,
+                new[] { "Jeb" }, "Kerbin:KSC", "Kerbin", 700000, 0, 0, 0, 0, 0, 0);
+            var afterDock = new WorldVerifiedSnapshot("snap-1", "anchor", true,
+                new[] { "Jeb", "Val" }, "orbit:station", "Kerbin", 710000, .01, 1, 2, 3, 4, 5);
+            var afterUndock = new WorldVerifiedSnapshot("snap-2", "anchor", false,
+                new[] { "Jeb" }, "orbit:free-vessel", "Kerbin", 715000, .02, 1, 2, 3, 5, 5);
+            // IDs deliberately sort opposite to capture order.
+            Assert.True(world.Schedule(new WorldEvent("initial", 0, WorldEventPhase.ExternalReplacement,
+                WorldEventKind.ExternalReplacement, "site", 0, captureSequence: 1,
+                priorSnapshotId: null, replacement: before)));
+            Assert.True(world.Schedule(new WorldEvent("z-dock", 50, WorldEventPhase.ExternalReplacement,
+                WorldEventKind.ExternalReplacement, "site", 0, captureSequence: 2,
+                priorSnapshotId: "snap-0", replacement: afterDock)));
+            Assert.True(world.Schedule(new WorldEvent("a-undock", 50, WorldEventPhase.ExternalReplacement,
+                WorldEventKind.ExternalReplacement, "site", 0, captureSequence: 3,
+                priorSnapshotId: "snap-1", replacement: afterUndock)));
+            Assert.True(world.Schedule(new WorldEvent("player", 50, WorldEventPhase.PlayerCommand,
+                WorldEventKind.MaterialDebit, "site", 2, ResourceKind.Metal)));
+
+            Assert.Equal(WorldAdvanceStatus.CaughtUp, world.Advance(0).Status);
+            Assert.Contains("snap-0", world.Snapshot().CurrentSnapshotIds);
+            Assert.Equal(WorldAdvanceStatus.CatchingUp, world.Advance(50, 1).Status);
+            Near(50, world.CursorUT);
+            // The interval ending at the external event still sees the prior verified crew/orbit snapshot.
+            Assert.Contains("snap-0", world.Snapshot().CurrentSnapshotIds);
+            Assert.Equal(WorldAdvanceStatus.CaughtUp, world.Advance(60).Status);
+            var saved = world.Snapshot();
+            Assert.Equal(new[] { "snap-0", "snap-1", "snap-2" }, saved.VerifiedSnapshots.Select(x => x.SnapshotId));
+            Assert.Equal(3, saved.CaptureSequence);
+            Assert.True(saved.Frontier!.BoundaryClosed);
+            var restored = WorldSimulator.Restore(saved);
+            Assert.Equal("snap-2", Assert.Single(restored.Snapshot().CurrentSnapshotIds));
+            Assert.Equal(new[] { "Jeb" }, restored.Snapshot().VerifiedSnapshots.Single(x => x.SnapshotId == "snap-2").CrewIds);
+            Near(8, Amount(restored, ResourceKind.Metal));
+            Assert.False(restored.Schedule(new WorldEvent("late-external", 60,
+                WorldEventPhase.ExternalReplacement, WorldEventKind.ExternalReplacement, "site", 0,
+                captureSequence: 4, priorSnapshotId: "snap-2",
+                replacement: new WorldVerifiedSnapshot("snap-3", "anchor", true,
+                    new[] { "Jeb" }, "orbit:late", "Kerbin"))));
+            Assert.Equal("late-event-behind-completed-equal-ut-frontier", restored.LastScheduleDiagnostic);
+        }
+
+        [Fact]
+        public void ReplacementBacklogRoundTripsAndPartitioningPreservesJournalState()
+        {
+            WorldSimulator Build()
+            {
+                var world = World(metal: 10);
+                var first = new WorldVerifiedSnapshot("first", "anchor", true,
+                    new[] { "Jeb" }, "surface", null);
+                var second = new WorldVerifiedSnapshot("second", "anchor", true,
+                    new[] { "Jeb", "Val" }, "orbit", "Kerbin", 700000, 0, 0, 0, 0, 0, 50);
+                world.Schedule(new WorldEvent("replace-1", 50, WorldEventPhase.ExternalReplacement,
+                    WorldEventKind.ExternalReplacement, "site", 0, captureSequence: 1,
+                    replacement: first));
+                world.Schedule(new WorldEvent("replace-2", 75, WorldEventPhase.ExternalReplacement,
+                    WorldEventKind.ExternalReplacement, "site", 0, captureSequence: 2,
+                    priorSnapshotId: "first", replacement: second));
+                return world;
+            }
+            var whole = Build();
+            Assert.Equal(WorldAdvanceStatus.CaughtUp, whole.Advance(100).Status);
+            var bounded = Build();
+            Assert.Equal(WorldAdvanceStatus.CatchingUp, bounded.Advance(100, 1).Status);
+            var saved = bounded.Snapshot();
+            Assert.Equal(2, saved.CaptureSequence);
+            var restored = WorldSimulator.Restore(saved);
+            Assert.Equal(WorldAdvanceStatus.CaughtUp, restored.Advance(100).Status);
+            Assert.Equal(whole.Snapshot().VerifiedSnapshots.Select(x => x.Signature),
+                restored.Snapshot().VerifiedSnapshots.Select(x => x.Signature));
+            Assert.Equal(whole.Snapshot().CurrentSnapshotIds, restored.Snapshot().CurrentSnapshotIds);
+            Assert.Equal(whole.Snapshot().Frontier!.Phase, restored.Snapshot().Frontier!.Phase);
+
+            var partitioned = Build();
+            partitioned.Advance(25); partitioned.Advance(50); partitioned.Advance(74); partitioned.Advance(100);
+            Assert.Equal(whole.Snapshot().CurrentSnapshotIds, partitioned.Snapshot().CurrentSnapshotIds);
+            Assert.Equal(whole.Snapshot().CompletedEventIds.OrderBy(x => x),
+                partitioned.Snapshot().CompletedEventIds.OrderBy(x => x));
+        }
+
+        [Fact]
+        public void UnknownAndOverBoundObservationTimesPinCursorAtUncertaintyStart()
+        {
+            var unknown = World(metal: 10);
+            unknown.Schedule(new WorldEvent("unknown", 40, WorldEventPhase.ExternalReplacement,
+                WorldEventKind.ExternalReplacement, "site", 0, captureSequence: 1, observedUT: 60,
+                timestampQuality: WorldTimestampQuality.Unknown, uncertaintyStartUT: 40,
+                replacement: new WorldVerifiedSnapshot("unknown-snap", "anchor", true,
+                    new[] { "Jeb" }, "orbit", "Kerbin")));
+            var result = unknown.Advance(100);
+            Assert.Equal(WorldAdvanceStatus.Blocked, result.Status);
+            Near(40, result.CursorUT);
+            Near(100, result.TargetUT);
+            Near(10, Amount(unknown, ResourceKind.Metal));
+            Assert.Single(unknown.Snapshot().PendingEvents);
+
+            var overBound = World(metal: 10);
+            overBound.Schedule(new WorldEvent("wide", 60, WorldEventPhase.ExternalReplacement,
+                WorldEventKind.ExternalReplacement, "site", 0, captureSequence: 1, observedUT: 60,
+                timestampQuality: WorldTimestampQuality.ObservedBounded, uncertaintyStartUT: 40,
+                replacement: new WorldVerifiedSnapshot("wide-snap", "anchor", true,
+                    new[] { "Jeb" }, "orbit", "Kerbin")));
+            Assert.Equal(WorldAdvanceStatus.Blocked, overBound.Advance(100).Status);
+            Near(40, overBound.CursorUT);
+            Assert.Empty(overBound.Snapshot().VerifiedSnapshots);
+        }
+
+        [Fact]
+        public void BoundedTimestampRequiresExplicitMeasuredToleranceAndAppliesAtObservation()
+        {
+            var conservative = World();
+            var observation = new WorldEvent("bounded", 60, WorldEventPhase.ExternalReplacement,
+                WorldEventKind.ExternalReplacement, "site", 0, captureSequence: 1, observedUT: 60,
+                timestampQuality: WorldTimestampQuality.ObservedBounded, uncertaintyStartUT: 59.5,
+                replacement: new WorldVerifiedSnapshot("bounded-snap", "anchor", true,
+                    new[] { "Jeb" }, "orbit", "Kerbin"));
+            Assert.True(conservative.Schedule(observation));
+            Assert.Equal(WorldAdvanceStatus.Blocked, conservative.Advance(100).Status);
+            Near(59.5, conservative.CursorUT);
+
+            // A measured cadence may opt into a finite bound; events still apply at observedUT, never at interval start.
+            var measured = World(maxTimestampUncertaintyUT: 1);
+            Assert.True(measured.Schedule(observation));
+            Assert.Equal(WorldAdvanceStatus.CaughtUp, measured.Advance(100).Status);
+            Near(100, measured.CursorUT);
+            Assert.Equal("bounded-snap", Assert.Single(measured.Snapshot().CurrentSnapshotIds));
+        }
+
+        [Fact]
+        public void EqualUtFrontierAllowsUncommittedCausalEventButRejectsLateEarlierPhase()
+        {
+            var world = World();
+            var first = new WorldVerifiedSnapshot("one", "anchor", true,
+                Array.Empty<string>(), "orbit", "Kerbin");
+            Assert.True(world.Schedule(new WorldEvent("external-1", 50, WorldEventPhase.ExternalReplacement,
+                WorldEventKind.ExternalReplacement, "site", 0, captureSequence: 1, replacement: first)));
+            Assert.Equal(WorldAdvanceStatus.CatchingUp, world.Advance(50, 1).Status);
+            Assert.True(world.Schedule(new WorldEvent("external-2", 50, WorldEventPhase.ExternalReplacement,
+                WorldEventKind.ExternalReplacement, "site", 0, captureSequence: 2, priorSnapshotId: "one",
+                replacement: new WorldVerifiedSnapshot("two", "anchor", true,
+                    Array.Empty<string>(), "orbit2", "Kerbin"))));
+            Assert.Equal(WorldAdvanceStatus.CaughtUp, world.Advance(50).Status);
+            Assert.False(world.Schedule(new WorldEvent("external-late", 50, WorldEventPhase.ExternalReplacement,
+                WorldEventKind.ExternalReplacement, "site", 0, captureSequence: 3, priorSnapshotId: "two",
+                replacement: new WorldVerifiedSnapshot("three", "anchor", true,
+                    Array.Empty<string>(), "orbit3", "Kerbin"))));
+            Assert.Contains("frontier", world.LastScheduleDiagnostic);
+            Assert.False(world.Schedule(new WorldEvent("late-campaign", 50, WorldEventPhase.Campaign,
+                WorldEventKind.MaterialDebit, "site", 1, ResourceKind.Metal)));
+            Assert.Contains("frontier", world.LastScheduleDiagnostic);
+        }
+
+        [Fact]
+        public void ReloadReplacesAbandonedJournalAndCaptureSequence()
+        {
+            var world = World();
+            WorldSnapshot loadedSave = world.Snapshot();
+            var abandoned = new WorldVerifiedSnapshot("abandoned", "anchor", true,
+                Array.Empty<string>(), "orbit-abandoned", "Kerbin");
+            Assert.True(world.Schedule(new WorldEvent("abandoned-event", 10,
+                WorldEventPhase.ExternalReplacement, WorldEventKind.ExternalReplacement, "site", 0,
+                captureSequence: 1, replacement: abandoned)));
+            Assert.Equal(WorldAdvanceStatus.CaughtUp, world.Advance(10).Status);
+
+            // Restore is a replacement of the timeline, not a merge with observations from the abandoned save.
+            var reloaded = WorldSimulator.Restore(loadedSave);
+            var currentTimeline = new WorldVerifiedSnapshot("current", "anchor", true,
+                new[] { "Jeb" }, "surface", null);
+            Assert.True(reloaded.Schedule(new WorldEvent("current-event", 10,
+                WorldEventPhase.ExternalReplacement, WorldEventKind.ExternalReplacement, "site", 0,
+                captureSequence: 1, replacement: currentTimeline)));
+            Assert.Equal(WorldAdvanceStatus.CaughtUp, reloaded.Advance(10).Status);
+            Assert.Equal(new[] { "current" }, reloaded.Snapshot().VerifiedSnapshots.Select(x => x.SnapshotId));
+            Assert.DoesNotContain("abandoned-event", reloaded.Snapshot().CompletedEventIds);
+        }
+
+        [Fact]
+        public void JournalDuplicatePayloadIsNoOpAndConflictingReuseIsDiagnosed()
+        {
+            var world = World();
+            var event1 = new WorldEvent("same", 10, WorldEventPhase.Arrival,
+                WorldEventKind.MaterialCredit, "site", 1, ResourceKind.Metal);
+            Assert.True(world.Schedule(event1));
+            Assert.False(world.Schedule(event1));
+            Assert.False(world.Schedule(new WorldEvent("same", 10,
+                WorldEventPhase.Arrival, WorldEventKind.MaterialCredit, "site", 2, ResourceKind.Metal)));
+            Assert.Equal("conflicting-reused-pending-event-id", world.LastScheduleDiagnostic);
+
+            var replacement = new WorldVerifiedSnapshot("same-snapshot", "anchor", true,
+                Array.Empty<string>(), "orbit-a", "Kerbin");
+            Assert.True(world.Schedule(new WorldEvent("external-one", 10,
+                WorldEventPhase.ExternalReplacement, WorldEventKind.ExternalReplacement, "site", 0,
+                captureSequence: 1, replacement: replacement)));
+            Assert.False(world.Schedule(new WorldEvent("external-two", 10,
+                WorldEventPhase.ExternalReplacement, WorldEventKind.ExternalReplacement, "site", 0,
+                captureSequence: 2, priorSnapshotId: "same-snapshot",
+                replacement: new WorldVerifiedSnapshot("same-snapshot", "anchor", true,
+                    Array.Empty<string>(), "orbit-b", "Kerbin"))));
+            Assert.Equal("conflicting-pending-snapshot-id", world.LastScheduleDiagnostic);
+            var saved = WorldSimulator.Restore(world.Snapshot()).Snapshot();
+            Assert.Equal(2, saved.RejectedEvents.Count);
+            Assert.Equal(2, saved.CaptureSequence);
+            Assert.Contains(saved.RejectedEvents, x => x.Reason == "conflicting-reused-pending-event-id");
+            Assert.Contains(saved.RejectedEvents, x => x.Reason == "conflicting-pending-snapshot-id");
         }
 
         [Fact]
@@ -251,8 +462,9 @@ namespace Lodeworks.Sim.Tests
             Near(Amount(reference, ResourceKind.Metal), Amount(restored, ResourceKind.Metal));
             Assert.False(restored.Schedule(new WorldEvent("arrival", 50, WorldEventPhase.Arrival,
                 WorldEventKind.MaterialCredit, "site", 80, ResourceKind.Metal)));
-            Assert.Throws<ArgumentException>(() => restored.Schedule(new WorldEvent("arrival", 100,
+            Assert.False(restored.Schedule(new WorldEvent("arrival", 100,
                 WorldEventPhase.Arrival, WorldEventKind.MaterialCredit, "site", 80, ResourceKind.Metal)));
+            Assert.Equal("conflicting-reused-completed-event-id", restored.LastScheduleDiagnostic);
         }
 
         [Fact]
